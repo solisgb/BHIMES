@@ -1,2 +1,2 @@
 # BHIMES
-Water balance in soil
+Soil water balance
