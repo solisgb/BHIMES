@@ -6,10 +6,7 @@ Created on Sun Jun 21 12:50:31 2020
 """
 import littleLogging as logging
 
-db = r'H:\off\balan\ch_202006.db'
-org1 = r'H:\off\balan\acuiferos.txt'
-org2 = r'H:\off\balan\afloramientos.txt'
-org3 = r'H:\off\balan\met_centroids.txt'
+project = 'BDA202006'
 
 if __name__ == "__main__":
 
@@ -23,11 +20,10 @@ if __name__ == "__main__":
 
         startTime = time()
 
-        b = BHIMES()
-        b.create_db(db)
-        b.aquifer_upsert_from_file(db, org1, separator='\t')
-        b.outcrop_upsert_from_file(db, org2, separator='\t')
-        b.met_upsert_from_file01(db, org3, separator='\t')
+        b = BHIMES(project)
+        b.aquifer_upsert_from_file()
+        b.outcrop_upsert_from_file()
+        b.met_upsert_from_file01()
 
         xtime = time() - startTime
         print(f'El script tardó {xtime:0.1f} s')

@@ -34,7 +34,7 @@ meteorologycal data related with aquifer -in this version-
     tmax real, minimum temperature Celsius deg
     tavg real, average temperature Celsius deg
 """
-
+import sqlite3
 import littleLogging as logging
 
 
@@ -44,15 +44,39 @@ class BHIMES():
     Soil water balance
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, project: str, xml_org: str='bhimes.xml'):
+        """
+        dst, project database
+        tables_2drop, drop table in the list -confirnation required-
+            if you drop a table you delete its data without backup them
+        """
+        self._read_params(xml_org, project)
+        self._create_db()
 
 
-    def create_db(self, dst: str):
+    def _read_params(self, xml_org: str, project: str):
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(xml_org)
+        root = tree.getroot()
+        prj = None
+        for element in root.findall('project'):
+            if element.get('name') == project:
+                prj = element
+                break
+        if not prj:
+            raise ValueError(f'No se encuentra el project {project}')
+
+        self.description = prj.find('description').text
+        self.db = prj.find('db').text
+        self.file_aquifers = prj.find('file_aquifers')
+        self.file_outcrops = prj.find('file_outcrops')
+        self.file_met = prj.find('file_met')
+
+
+    def _create_db(self):
         """
         create a sqlite db
         """
-        import sqlite3
 
         stm1 = \
         """
@@ -95,32 +119,34 @@ class BHIMES():
         stm4 = \
         """
         create table if not exists met(
-            fid integer primary key,
-            date text(10)
+            fid integer,
+            date text(10),
             p real,
             tmin real,
             tmax real,
             tavg real,
+            primary key (fid, date)
             foreign key (fid) references aquifer(fid)
         )
         """
-
-        con = sqlite3.connect(dst)
-        con.execute("PRAGMA encoding = 'utf-8'")
+        con = sqlite3.connect(self.db)
         con.execute("PRAGMA foreign_keys = 1")
         cur = con.cursor()
         for stm in (stm1, stm2, stm3, stm4):
-            cur.execute(stm)
+            try:
+                cur.execute(stm)
+            except:
+                con.close()
+                raise ValueError(f'Error al ejecutar {stm}')
+        cur.execute('attach database ? as allen', ('r0.db',))
         con.commit()
         con.close()
 
 
-    def aquifer_upsert_from_file(self, db: str, org: str,
-                                 nskip: int=1, separator: str=';'):
+    def aquifer_upsert_from_file(self):
         """
         inserts or update aquifer data from text file -utf8-
         """
-        import sqlite3
 
         select1 = \
         """
@@ -136,8 +162,11 @@ class BHIMES():
         insert into aquifer(fid, xc, yc, y4326, area, name)
         values (?, ?, ?, ?, ?, ?)
         """
+        org = self.file_aquifers.text
+        nskip = int(self.file_aquifers.get('nskip'))
+        separator = self.file_aquifers.get('separator')
 
-        con = sqlite3.connect(db)
+        con = sqlite3.connect(self.db)
         cur = con.cursor()
 
         with open(org, 'r') as f:
@@ -161,7 +190,7 @@ class BHIMES():
         con.close()
 
 
-    def outcrop_upsert_from_file(self, db: str, org: str,
+    def outcrop_upsert_from_file(self, org: str,
                                  nskip: int=1, separator: str=';'):
         """
         inserts or update outcrops data from text file -utf8-
@@ -184,9 +213,13 @@ class BHIMES():
             kdirect, kuz, klateral, krunoff)
         values (?,?,?,?,?,?,?,?,?,?,?,?)
         """
+        org = self.file_outcrops.text
+        nskip = int(self.file_outcrops.get('nskip'))
+        separator = self.file_outcrops.get('separator')
 
-        con = sqlite3.connect(db)
+        con = sqlite3.connect(self.db)
         cur = con.cursor()
+        cur.execute('pragma encoding="UTF-8"')
 
         with open(org, 'r') as f:
             for i, line in enumerate(f):
@@ -219,30 +252,32 @@ class BHIMES():
         con.close()
 
 
-    def met_upsert_from_file01(self, db: str, org: str,
+    def met_upsert_from_file01(self, org: str,
                                  nskip: int=1, separator: str=';'):
         """
         inserts or update meteorological data from text file -utf8-
         with no average temperature
         """
-        import sqlite3
 
         select1 = \
         """
-        select fid from met where fid=?
+        select fid, date from met where fid=? and date=?
         """
         update1 = \
         """
-        update met set date=?, p=?, tmin=?, tmax=?, tavg=?
-        where fid=?
+        update met set p=?, tmin=?, tmax=?, tavg=?
+        where fid=? and date=?
         """
         insert1 = \
         """
-        insert into aquifer(fid, date, p, tmin, tmax, tavg)
+        insert into met(fid, date, p, tmin, tmax, tavg)
         values (?, ?, ?, ?, ?, ?)
         """
+        org = self.file_met.text
+        nskip = int(self.file_met.get('nskip'))
+        separator = self.file_met.get('separator')
 
-        con = sqlite3.connect(db)
+        con = sqlite3.connect(self.db)
         cur = con.cursor()
 
         with open(org, 'r') as f:
@@ -257,9 +292,9 @@ class BHIMES():
                 tmax = float(words[4]) / 10.
                 tavg = (tmin + tmax) / 2.
 
-                row = cur.execute(select1, (fid,)).fetchone()
+                row = cur.execute(select1, (fid, date)).fetchone()
                 if row:
-                    cur.execute(update1, (date, p, tmin, tmax, tavg, fid))
+                    cur.execute(update1, (p, tmin, tmax, tavg, fid, date))
                 else:
                     cur.execute(insert1, (fid, date, p, tmin, tmax, tavg))
 
@@ -267,11 +302,14 @@ class BHIMES():
         con.close()
 
 
-    def swb01(self, aquifers: list, table_output: str='swb01'):
+    def swb01(self, table_output: str='swb01'):
         """
         soil water balance version 0.01
         """
-        select1 = \
-        """
 
-        """
+        con = sqlite3.connect(self.dst)
+        cur = con.cursor()
+        cur.execute('attach database ? as allen', ('r0.db',))
+
+        con.commit()
+        con.close()

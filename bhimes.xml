@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="iso-8859-1" standalone="yes"?>
+<!-- Proyectos que utiliza el programa bhimes
+ -->
+<bhimes>
+	<project name="BDA202006">
+		<description>Acuíferos ALMUDAINA-SEGARIA, JALÓN, JESÚS POBRE, MEDIODÍA, MONTGÓ-DENIA, ORBA, PARCENT, SOLANA DE LA LLOSA Y VERGEL</description>
+		<db>H:\\off\\balan\\ch_202006.db</db>
+		<file_aquifers upsert="0" nskip="1" sep=",">H:\\off\\balan\\acuiferos.txt</file_aquifers>
+		<file_outcrops upsert="0" nskip="1" sep="\t">H:\\off\\balan\\afloramientos.txt</file_outcrops>
+		<file_met upsert="0"  nskip="1" sep=";">H:\\off\\balan\\met_centroids.txt</file_met>
+	</project>
+</bhimes>
