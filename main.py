@@ -6,7 +6,8 @@ Created on Sun Jun 21 12:50:31 2020
 """
 import littleLogging as logging
 
-project = 'BDA202006'
+project: str = 'BDA202006'
+load_data_in_db: bool = False
 
 if __name__ == "__main__":
 
@@ -21,9 +22,11 @@ if __name__ == "__main__":
         startTime = time()
 
         b = BHIMES(project)
-        b.aquifer_upsert_from_file()
-        b.outcrop_upsert_from_file()
-        b.met_upsert_from_file01()
+        if load_data_in_db:
+            b.aquifer_upsert_from_file()
+            b.outcrop_upsert_from_file()
+            b.met_upsert_from_file01()
+        b.swb01()
 
         xtime = time() - startTime
         print(f'El script tardó {xtime:0.1f} s')

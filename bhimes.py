@@ -35,6 +35,7 @@ meteorologycal data related with aquifer -in this version-
     tavg real, average temperature Celsius deg
 """
 import sqlite3
+from numba import jit
 import littleLogging as logging
 
 
@@ -43,6 +44,7 @@ class BHIMES():
     Balance HIdroMEteorológico en el Suelo
     Soil water balance
     """
+    _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order
 
     def __init__(self, project: str, xml_org: str='bhimes.xml'):
         """
@@ -71,6 +73,14 @@ class BHIMES():
         self.file_aquifers = prj.find('file_aquifers')
         self.file_outcrops = prj.find('file_outcrops')
         self.file_met = prj.find('file_met')
+        self.select_aquifers = prj.find('select_aquifers')
+        self.select_outcrops = prj.find('select_outcrops')
+        self.select_met = prj.find('select_met')
+        self.initial_condition = prj.find('initial_condition').text.lower()
+        if self.initial_condition not in self._initial_conditions:
+            logging.append(f'initial condition changed from ' +\
+                           '{self.initial_condition} to normal')
+            self.initial_condition = 'normal'
 
 
     def _create_db(self):
@@ -195,7 +205,6 @@ class BHIMES():
         """
         inserts or update outcrops data from text file -utf8-
         """
-        import sqlite3
 
         select1 = \
         """
@@ -306,10 +315,97 @@ class BHIMES():
         """
         soil water balance version 0.01
         """
+        import numpy as np
 
-        con = sqlite3.connect(self.dst)
+        select_r0 = \
+        """
+        select r0
+        from allen.r0
+        where lat = ?
+        order by "month"
+        """
+
+        con = sqlite3.connect(self.db)
         cur = con.cursor()
         cur.execute('attach database ? as allen', ('r0.db',))
 
-        con.commit()
+        cur.execute(self.select_aquifers.text)
+        aquifers = [row for row in cur.fetchall()]
+
+        for aquifer in aquifers:
+            print(f'{aquifer[1]}')
+            cur.execute(select_r0, (int(aquifer[2]),))
+            sr = [row for row in cur.fetchall()]
+            cur.execute(self.select_outcrops.text, (aquifer[0],) )
+            outcrops = [row for row in cur.fetchall()]
+            cur.execute(self.select_met.text, (aquifer[0],) )
+            met = np.array([row for row in cur.fetchall()])
+            dates = met[:, 0]
+            months = np.array([int(row[5:7])-1 for row in dates], np.int32)
+            p = met[:, 1]
+            tmin = met[:, 2]
+            tmax = met[:, 3]
+            tavg = met[:, 4]
+            et = np.empty((p.size), np.float32)
+            rch = np.empty((p.size), np.float32)
+            self.hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
+            for outcrop in outcrops:
+                self.swb01_01(self.initial_condition,
+                              self._initial_conditions,
+                              outcrop, dates, p, et, rch)
+
         con.close()
+
+
+    @jit(nopython=True)
+    def hargreaves_samani_01(r0, im, tmax, tmin, tavg, etp):
+        """
+        et by hargreaves-samani
+        param
+        r0: extraterrestrial radiation mm
+        im: for a vector of observations dates, im has the month of each
+            date -1; ie, for the date 1970-08-22 -> 8 - 1 = 7
+        tmax, tmin, tavg: máx, mín & average temperature ºC
+        etp (output): et mm
+        """
+        for i in range(len(im)):
+            etp[i] = 0.0023 * (tavg[i] + 17.78) + r0[im[i]] \
+                * (tmax[i] - tmin[i])**0.5
+
+
+    @jit(nopython=True)
+    def swb01_01(wcondition, initial_conditions, outcrop, dates, p, et, rch):
+        """
+        soil water balance in a temporal data serie
+        """
+        isup = 0
+        iia = 1
+        iwhc = 2
+        ikdirect = 3
+        ikuz = 4
+        iklateral = 5
+        ikrunoff = 6
+
+        if wcondition == initial_conditions[0]:
+            ia0, whc0 = 0.1, 0.1
+        elif wcondition == initial_conditions[1]:
+            ia0, whc0 = 0.5, 0.5
+        else:
+            ia0, whc0 = 0.9, 0.9
+
+        ia = outcrop[iia] * ia0
+        whc = outcrop[iwhc] * whc0
+        for i in range(1, p.size):
+            x = outcrop[iia] - ia  # initial abstraction
+            if p[i] > x:
+                p[i] = p[i] - x
+                ia = outcrop[iia]
+            else:
+                p[i] = 0.
+                ia = ia + p[i]
+            x = outcrop[iwhc] - whc
+
+
+
+
+
