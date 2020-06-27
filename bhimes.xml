@@ -39,5 +39,6 @@ initial_conditions: a value in (dry, normal, wet)
 		order by m."date";
 		</select_met>
 		<initial_conditions>normal</initial_conditions>
+		<time_step>24</time_step>
 	</project>
 </bhimes>

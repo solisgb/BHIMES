@@ -81,6 +81,11 @@ class BHIMES():
             logging.append(f'initial condition changed from ' +\
                            '{self.initial_condition} to normal')
             self.initial_condition = 'normal'
+        self.time_step = int(prj.find('time_step').text)
+        if self.time_step < 1:
+            self.time_step = 1
+        elif self.time_step > 24:
+            self.time_step = 24
 
 
     def _create_db(self):
@@ -347,10 +352,10 @@ class BHIMES():
             tmax = met[:, 3]
             tavg = met[:, 4]
             et = np.empty((p.size), np.float32)
-            rch = np.empty((p.size), np.float32)
+            rch = np.zeros((p.size), np.float32)
             self.hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
             for outcrop in outcrops:
-                self.swb01_01(self.initial_condition,
+                self.swb01_01(self.time_step, self.initial_condition,
                               self._initial_conditions,
                               outcrop, dates, p, et, rch)
 
@@ -365,7 +370,7 @@ class BHIMES():
         r0: extraterrestrial radiation mm
         im: for a vector of observations dates, im has the month of each
             date -1; ie, for the date 1970-08-22 -> 8 - 1 = 7
-        tmax, tmin, tavg: máx, mín & average temperature ºC
+        tmax, tmin, tavg: máx, mín, average temperature ºC
         etp (output): et mm
         """
         for i in range(len(im)):
@@ -374,17 +379,19 @@ class BHIMES():
 
 
     @jit(nopython=True)
-    def swb01_01(wcondition, initial_conditions, outcrop, dates, p, et, rch):
+    def swb01_01(time_step, wcondition, initial_conditions, outcrop,
+                 dates, p, et, rch, runoff):
         """
         soil water balance in a temporal data serie
         """
         isup = 0
         iia = 1
         iwhc = 2
-        ikdirect = 3
-        ikuz = 4
-        iklateral = 5
-        ikrunoff = 6
+        kdirect = outcrop[3] / time_step
+        kuz = outcrop[4] / time_step
+        klateral = outcrop[5] / time_step
+        krunoff = outcrop[6] / time_step
+        time_step = 24
 
         if wcondition == initial_conditions[0]:
             ia0, whc0 = 0.1, 0.1
@@ -396,16 +403,71 @@ class BHIMES():
         ia = outcrop[iia] * ia0
         whc = outcrop[iwhc] * whc0
         for i in range(1, p.size):
-            x = outcrop[iia] - ia  # initial abstraction
-            if p[i] > x:
-                p[i] = p[i] - x
-                ia = outcrop[iia]
-            else:
-                p[i] = 0.
-                ia = ia + p[i]
-            x = outcrop[iwhc] - whc
+            p_ts, ia = BHIMES._storage_01(outcrop[ia], ia, p[i])  # ia
+            et_ts, ia = BHIMES._storage_et_01(whc, et[i])
+
+            if kdirect > 0:  # direct recharge
+                rch[i] = min(kdirect, p_ts)
+                p_ts = p_ts - rch[i]
+
+            p_ts = p_ts / time_step
+            et_ts = et_ts / time_step
+            for its in (range(time_step)):
+
+                p_ts, whc = BHIMES._storage_01(outcrop[iwhc], whc, p_ts) # soil
+
+                if abs(whc - outcrop[iwhc]) < 0.001:  # recharge through unsatured zone
+                    x = min(kuz, p_ts)
+                    rch[i] += x
+                    p_ts = p_ts - x
+
+                if p_ts > 0. and krunoff > 0.:
+                    x = min(krunoff, p_ts)
+                    p_ts = p_ts - x
+
+                runoff[i] += p_ts
+
+                BHIMES._storage_et_01(whc, et_ts)
 
 
+    @jit(nopython=True)
+    def _storage_01(smax, scurrent, wi):
+        """
+        water balance in a storage
+        parameters:
+            smax: max water storage
+            scurrent: current water storage (at the beginning)
+            wi: water input
+        output:
+            wo: water not in the storage
+            sfinal: storage at the end of the water balance
+        """
+        sdry = smax - wi
+        if wi > sdry:
+            wo = wi - sdry
+            sfinal = smax
+        else:
+            wo = 0.
+            sfinal = scurrent + wi
+        return wo, sfinal
 
 
+    @jit(nopython=True)
+    def _storage_et_01(scurrent, pwr):
+        """
+        soil water release -et-
+        parameters:
+            scurrent: current water storage (at the beginning)
+            pwr: potential water release
+        output:
+            pwr_final: pwr at the end of the balance
+            sfinal: storage at the end of the water balance
+        """
+        if pwr > scurrent:
+            pwr_final = pwr - scurrent
+            sfinal = 0.
+        else:
+            pwr_final = 0.
+            sfinal = scurrent - pwr
+        return pwr_final, sfinal
 
