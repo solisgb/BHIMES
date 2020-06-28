@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="iso-8859-1" standalone="yes"?>
 <!-- For each proyect
-description: short prject description
+description: short project description
 db: sqlite3 db, including path 2 file -get double dir separator in windows, e.g. c:\\path2\\dbname
 file_aquifers: path 2 text file with aquifers data
 	upsert: if 1 peforms upsert in aquifer table; otherwise do nothing
 	nskip: number of lines to skip in the head of the file
-	sep; column separatos
+	sep; column separator
 file_outcrops: path 2 text file with outcrops data
 	upsert, nskip & sep: as described previously
 file_met: : path 2 text file with meteorological data
@@ -13,7 +13,8 @@ file_met: : path 2 text file with meteorological data
 select_aquifers: select to aquifer table; you can change the aquifers in each project but not the columns in the select
 select_outcrops: select to aquifer table; do not change this select
 select_met: select to met(eorological) table; you can change the limits of the dates to be procesed
-initial_conditions: a value in (dry, normal, wet)
+initial_conditions str: a value in (dry, normal, wet)
+time_step int: max iter number; between 1 and 12
  -->
 <bhimes>
 	<project name="BDA202006">
@@ -38,7 +39,8 @@ initial_conditions: a value in (dry, normal, wet)
 		where m."date" >= '1970-01-01' and m."date" &lt;= '2010-12-31' and m.fid=?
 		order by m."date";
 		</select_met>
-		<initial_conditions>normal</initial_conditions>
+		<initial_condition>normal</initial_condition>
 		<time_step>24</time_step>
+		<et_avg>0.6, 0.5, 0.7, 0.8, 0.9, 1.1, 1.2, 1.2, 0.9, 0.8, 0.7, 0.6</et_avg>
 	</project>
 </bhimes>

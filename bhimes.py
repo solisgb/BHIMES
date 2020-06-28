@@ -46,18 +46,22 @@ class BHIMES():
     """
     _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order
 
-    def __init__(self, project: str, xml_org: str='bhimes.xml'):
+    def __init__(self, project: str, model: str = 'basic',
+                 xml_org: str='bhimes.xml'):
         """
         dst, project database
         tables_2drop, drop table in the list -confirnation required-
             if you drop a table you delete its data without backup them
         """
+        self.model = model
         self._read_params(xml_org, project)
         self._create_db()
 
 
     def _read_params(self, xml_org: str, project: str):
         import xml.etree.ElementTree as ET
+
+        MAX_TIME_STEP = 24
         tree = ET.parse(xml_org)
         root = tree.getroot()
         prj = None
@@ -84,8 +88,10 @@ class BHIMES():
         self.time_step = int(prj.find('time_step').text)
         if self.time_step < 1:
             self.time_step = 1
-        elif self.time_step > 24:
-            self.time_step = 24
+        elif self.time_step > MAX_TIME_STEP:
+            self.time_step = MAX_TIME_STEP
+        self.et_avg = \
+        [float(item) for item in prj.find('et_avg').text.split(',')]
 
 
     def _create_db(self):
@@ -177,6 +183,9 @@ class BHIMES():
         insert into aquifer(fid, xc, yc, y4326, area, name)
         values (?, ?, ?, ?, ?, ?)
         """
+        if int(self.file_aquifers.get('upsert')) != 1:
+            return
+
         org = self.file_aquifers.text
         nskip = int(self.file_aquifers.get('nskip'))
         separator = self.file_aquifers.get('separator')
@@ -227,6 +236,9 @@ class BHIMES():
             kdirect, kuz, klateral, krunoff)
         values (?,?,?,?,?,?,?,?,?,?,?,?)
         """
+        if int(self.file_outcrops.get('upsert')) != 1:
+            return
+
         org = self.file_outcrops.text
         nskip = int(self.file_outcrops.get('nskip'))
         separator = self.file_outcrops.get('separator')
@@ -287,6 +299,9 @@ class BHIMES():
         insert into met(fid, date, p, tmin, tmax, tavg)
         values (?, ?, ?, ?, ?, ?)
         """
+        if int(self.file_met.get('upsert')) != 1:
+            return
+
         org = self.file_met.text
         nskip = int(self.file_met.get('nskip'))
         separator = self.file_met.get('separator')
@@ -348,16 +363,26 @@ class BHIMES():
             dates = met[:, 0]
             months = np.array([int(row[5:7])-1 for row in dates], np.int32)
             p = met[:, 1]
-            tmin = met[:, 2]
-            tmax = met[:, 3]
-            tavg = met[:, 4]
-            et = np.empty((p.size), np.float32)
+            if self.model != 'basic':
+                tmin = met[:, 2]
+                tmax = met[:, 3]
+                tavg = met[:, 4]
+                et = np.empty((p.size), np.float32)
+                self.hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
             rch = np.zeros((p.size), np.float32)
-            self.hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
+            runoff = np.zeros((p.size), np.float32)
             for outcrop in outcrops:
-                self.swb01_01(self.time_step, self.initial_condition,
-                              self._initial_conditions,
-                              outcrop, dates, p, et, rch)
+                rch1 = np.zeros((p.size), np.float32)
+                runoff1 = np.zeros((p.size), np.float32)
+                if self.model == 'basic':
+                    swb_basic(outcrop, outcrop, self.et_avg,
+                              months, p, rch1, runoff1)
+                else:
+                    self.swb01_01(self.time_step, self.initial_condition,
+                                  self._initial_conditions,
+                                  outcrop, p, et, rch1, runoff1)
+                rch += rch1
+                runoff += runoff1
 
         con.close()
 
@@ -380,39 +405,50 @@ class BHIMES():
 
     @jit(nopython=True)
     def swb01_01(time_step, wcondition, initial_conditions, outcrop,
-                 dates, p, et, rch, runoff):
+                 p, et, rch, runoff):
         """
         soil water balance in a temporal data serie
+        parameters:
+        time_step, int: number of iterations to work out water balance in
+            the soil
+        wcondition str: initial vegatation and soil water condition
+        initial conditions list str: all possible initial water conditions
+        outcrop np array float: outcrops attributes
+            outcrop[iia]: initial abstraction mm
+            kdirect: k recharge mm
+            kuz: k unsatured zone
+            klateral: k lateral applied to kuz
+            krunof: k from runoff to kuz
+        dates np array str: dates as aaaa-mm-dd
+        p, np array float: precipitacion mm
+        et, np array float: potential evapotranspiration mm
+        rch, np array float: recharge mm -output-
+        runoff, np array float: runoff mm -output-
         """
-        isup = 0
         iia = 1
         iwhc = 2
-        kdirect = outcrop[3] / time_step
-        kuz = outcrop[4] / time_step
-        klateral = outcrop[5] / time_step
-        krunoff = outcrop[6] / time_step
-        time_step = 24
 
-        if wcondition == initial_conditions[0]:
-            ia0, whc0 = 0.1, 0.1
-        elif wcondition == initial_conditions[1]:
-            ia0, whc0 = 0.5, 0.5
-        else:
-            ia0, whc0 = 0.9, 0.9
+        ia0, whc0 = BHIMES._initial_wstorages(wcondition, initial_conditions)
 
         ia = outcrop[iia] * ia0
         whc = outcrop[iwhc] * whc0
         for i in range(1, p.size):
             p_ts, ia = BHIMES._storage_01(outcrop[ia], ia, p[i])  # ia
-            et_ts, ia = BHIMES._storage_et_01(whc, et[i])
+            et_ts, ia = BHIMES._storage_et_01(ia, et[i])
 
-            if kdirect > 0:  # direct recharge
-                rch[i] = min(kdirect, p_ts)
-                p_ts = p_ts - rch[i]
+            nts = BHIMES.nstep_set(time_step, p[i], et[i], whc)
+            kdirect = outcrop[3] / nts
+            kuz = outcrop[4] / nts
+            klateral = outcrop[5] / nts
+            krunoff = outcrop[6] / nts
+            p_ts = p_ts / nts
+            et_ts = et_ts / nts
 
-            p_ts = p_ts / time_step
-            et_ts = et_ts / time_step
             for its in (range(time_step)):
+
+                if kdirect > 0:  # direct recharge
+                    rch[i] += min(kdirect, p_ts)
+                    p_ts -= rch[i]
 
                 p_ts, whc = BHIMES._storage_01(outcrop[iwhc], whc, p_ts) # soil
 
@@ -425,9 +461,24 @@ class BHIMES():
                     x = min(krunoff, p_ts)
                     p_ts = p_ts - x
 
+                if klateral > 0 and rch[i] > 0:
+                    x = min(klateral, rch[i])
+                    rch[i] -= x
+
                 runoff[i] += p_ts
 
                 BHIMES._storage_et_01(whc, et_ts)
+
+
+    @jit(nopython=True)
+    def _initial_wstorages(wcondition, initial_conditions):
+        if wcondition == initial_conditions[0]:
+            ia0, whc0 = 0.1, 0.1
+        elif wcondition == initial_conditions[1]:
+            ia0, whc0 = 0.5, 0.5
+        else:
+            ia0, whc0 = 0.9, 0.9
+        return ia0, whc0
 
 
     @jit(nopython=True)
@@ -471,3 +522,48 @@ class BHIMES():
             sfinal = scurrent - pwr
         return pwr_final, sfinal
 
+
+    @jit(nopython=True)
+    def nstep_set(nstep0, p, et, whc):
+        """
+        sets nstep according to p, et, whc
+        """
+        if nstep0 == 1:
+            return 1
+
+        minp = 2.
+        minet = 0.1 * whc
+        if minet < 0.25:
+            minet = 0.25
+
+        if p < minp:
+            nstep = 1
+        else:
+            for i in range(nstep0):
+                nstep = i + 1
+                x = et / nstep
+                if x < minet:
+                    break
+        return nstep
+
+
+    @jit(nopython=True)
+    def swb_basic(kuz, whc, et_avg, months, p, rch, runoff):
+        """
+        basic soil water balance in a temporal data serie
+        """
+        whc0 = 0.1 * whc
+        for i in range(1, p.size):
+            p1 = p[i]
+            x = whc - whc0
+            if p1 > x:
+                p1 -= x
+                whc0 = whc
+            else:
+                p1 = 0
+                whc0 += p1
+            rch[i] = min(kuz, p1)
+            p1 -= rch[i]
+            if p1 > 0:
+                runoff[i] = p1
+            whc0 = max(0., whc0-et_avg[months[i]])
