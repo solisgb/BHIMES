@@ -15,10 +15,12 @@ select_outcrops: select to aquifer table; do not change this select
 select_met: select to met(eorological) table; you can change the limits of the dates to be procesed
 initial_conditions str: a value in (dry, normal, wet)
 time_step int: max iter number; between 1 and 12
+et_avg 12 float values separated by commas: average month evapotranspiration from Jan. to Dec.
+table_output: nombre de la tabla de resultados
  -->
 <bhimes>
 	<project name="BDA202006">
-		<description>Acu√≠feros ALMUDAINA-SEGARIA, JAL√ìN, JES√öS POBRE, MEDIOD√çA, MONTG√ì-DENIA, ORBA, PARCENT, SOLANA DE LA LLOSA Y VERGEL</description>
+		<description>AcuÌferos ALMUDAINA-SEGARIA, JAL”N, JES⁄S POBRE, MEDIODÕA, MONTG”-DENIA, ORBA, PARCENT, SOLANA DE LA LLOSA Y VERGEL</description>
 		<db>H:\\off\\balan\\ch_202006.db</db>
 		<file_aquifers upsert="0" nskip="1" sep=",">H:\\off\\balan\\acuiferos.txt</file_aquifers>
 		<file_outcrops upsert="0" nskip="1" sep="\t">H:\\off\\balan\\afloramientos.txt</file_outcrops>
@@ -42,5 +44,6 @@ time_step int: max iter number; between 1 and 12
 		<initial_condition>normal</initial_condition>
 		<time_step>24</time_step>
 		<et_avg>0.6, 0.5, 0.7, 0.8, 0.9, 1.1, 1.2, 1.2, 0.9, 0.8, 0.7, 0.6</et_avg>
+		<table_output>recharge_202003</table_output>
 	</project>
 </bhimes>

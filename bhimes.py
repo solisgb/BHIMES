@@ -46,14 +46,14 @@ class BHIMES():
     """
     _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order
 
-    def __init__(self, project: str, model: str = 'basic',
+    def __init__(self, project: str, procedure: str = 'basic',
                  xml_org: str='bhimes.xml'):
         """
-        dst, project database
-        tables_2drop, drop table in the list -confirnation required-
-            if you drop a table you delete its data without backup them
+        project: project name in xml_org
+        procedure: to calculate soil water balance
+        xml_org: name of xml file with execution parameters
         """
-        self.model = model
+        self.proc = procedure
         self._read_params(xml_org, project)
         self._create_db()
 
@@ -73,14 +73,15 @@ class BHIMES():
             raise ValueError(f'No se encuentra el project {project}')
 
         self.description = prj.find('description').text
-        self.db = prj.find('db').text
+        self.db = prj.find('db').text.strip()
         self.file_aquifers = prj.find('file_aquifers')
         self.file_outcrops = prj.find('file_outcrops')
         self.file_met = prj.find('file_met')
         self.select_aquifers = prj.find('select_aquifers')
         self.select_outcrops = prj.find('select_outcrops')
         self.select_met = prj.find('select_met')
-        self.initial_condition = prj.find('initial_condition').text.lower()
+        self.initial_condition = prj.find('initial_condition').text\
+        .strip().lower()
         if self.initial_condition not in self._initial_conditions:
             logging.append(f'initial condition changed from ' +\
                            '{self.initial_condition} to normal')
@@ -92,6 +93,7 @@ class BHIMES():
             self.time_step = MAX_TIME_STEP
         self.et_avg = \
         [float(item) for item in prj.find('et_avg').text.split(',')]
+        self.table_output = prj.find('table_output').text.strip()
 
 
     def _create_db(self):
@@ -188,7 +190,7 @@ class BHIMES():
 
         org = self.file_aquifers.text
         nskip = int(self.file_aquifers.get('nskip'))
-        separator = self.file_aquifers.get('separator')
+        separator = self.file_aquifers.get('sep')
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
@@ -214,8 +216,7 @@ class BHIMES():
         con.close()
 
 
-    def outcrop_upsert_from_file(self, org: str,
-                                 nskip: int=1, separator: str=';'):
+    def outcrop_upsert_from_file(self):
         """
         inserts or update outcrops data from text file -utf8-
         """
@@ -241,7 +242,7 @@ class BHIMES():
 
         org = self.file_outcrops.text
         nskip = int(self.file_outcrops.get('nskip'))
-        separator = self.file_outcrops.get('separator')
+        separator = self.file_outcrops.get('sep')
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
@@ -278,8 +279,7 @@ class BHIMES():
         con.close()
 
 
-    def met_upsert_from_file01(self, org: str,
-                                 nskip: int=1, separator: str=';'):
+    def met_upsert_from_file01(self):
         """
         inserts or update meteorological data from text file -utf8-
         with no average temperature
@@ -304,7 +304,7 @@ class BHIMES():
 
         org = self.file_met.text
         nskip = int(self.file_met.get('nskip'))
-        separator = self.file_met.get('separator')
+        separator = self.file_met.get('sep')
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
@@ -331,7 +331,7 @@ class BHIMES():
         con.close()
 
 
-    def swb01(self, table_output: str='swb01'):
+    def swb01(self):
         """
         soil water balance version 0.01
         """
@@ -355,34 +355,38 @@ class BHIMES():
         for aquifer in aquifers:
             print(f'{aquifer[1]}')
             cur.execute(select_r0, (int(aquifer[2]),))
-            sr = [row for row in cur.fetchall()]
+            sr = [row for row in cur.fetchall()]  # solar radiation -Allen-
             cur.execute(self.select_outcrops.text, (aquifer[0],) )
             outcrops = [row for row in cur.fetchall()]
             cur.execute(self.select_met.text, (aquifer[0],) )
             met = np.array([row for row in cur.fetchall()])
             dates = met[:, 0]
             months = np.array([int(row[5:7])-1 for row in dates], np.int32)
-            p = met[:, 1]
-            if self.model != 'basic':
-                tmin = met[:, 2]
-                tmax = met[:, 3]
-                tavg = met[:, 4]
+            p = met[:,1].astype(np.float32)
+            if self.proc != 'basic':
+                tmin = met[:, 2].astype(np.float32)
+                tmax = met[:, 3].astype(np.float32)
+                tavg = met[:, 4].astype(np.float32)
                 et = np.empty((p.size), np.float32)
                 self.hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
             rch = np.zeros((p.size), np.float32)
             runoff = np.zeros((p.size), np.float32)
             for outcrop in outcrops:
+                o = Outcrop(outcrop)
+                ia0, whc0 = self._initial_wstorages()
                 rch1 = np.zeros((p.size), np.float32)
                 runoff1 = np.zeros((p.size), np.float32)
-                if self.model == 'basic':
-                    swb_basic(outcrop, outcrop, self.et_avg,
-                              months, p, rch1, runoff1)
+                if self.proc == 'basic':
+                    BHIMES.swb_basic(o.kuz, whc0, o.whc, self.et_avg,
+                                     months, p, rch1, runoff1)
                 else:
                     self.swb01_01(self.time_step, self.initial_condition,
                                   self._initial_conditions,
                                   outcrop, p, et, rch1, runoff1)
                 rch += rch1
                 runoff += runoff1
+
+            self.insert_output(con, cur, dates, rch, runoff)
 
         con.close()
 
@@ -470,11 +474,14 @@ class BHIMES():
                 BHIMES._storage_et_01(whc, et_ts)
 
 
-    @jit(nopython=True)
-    def _initial_wstorages(wcondition, initial_conditions):
-        if wcondition == initial_conditions[0]:
+    def _initial_wstorages(self):
+        """
+        sets coefs. in function of water initial condition
+            then
+        """
+        if self.initial_conditions == self._initial_conditions[0]:
             ia0, whc0 = 0.1, 0.1
-        elif wcondition == initial_conditions[1]:
+        elif self.initial_conditions == self._initial_conditions[1]:
             ia0, whc0 = 0.5, 0.5
         else:
             ia0, whc0 = 0.9, 0.9
@@ -547,12 +554,24 @@ class BHIMES():
         return nstep
 
 
-    @jit(nopython=True)
-    def swb_basic(kuz, whc, et_avg, months, p, rch, runoff):
+#    @jit(nopython=True)
+    @staticmethod
+    def swb_basic(kuz, cwhc0, whc, et_avg, im, p, rch, runoff):
         """
         basic soil water balance in a temporal data serie
+        parameters:
+            kuz: k unsatured zone mm
+            whc0: coef >=0 y <= 1 to multiply whc
+            whc: soil water holding content mm
+            et_avg: average months values of et mm -12 values, Jan. to Dec.-
+            im np array int: for a vector of observations dates,
+                im contains the month of each date -1;
+                i.e., for the date 1970-08-22 -> 8 - 1 = 7
+        p, np array float: precipitacion mm
+        rch, np array float: recharge mm -output-
+        runoff, np array float: runoff mm -output-
         """
-        whc0 = 0.1 * whc
+        whc0 = cwhc0 * whc
         for i in range(1, p.size):
             p1 = p[i]
             x = whc - whc0
@@ -566,4 +585,59 @@ class BHIMES():
             p1 -= rch[i]
             if p1 > 0:
                 runoff[i] = p1
-            whc0 = max(0., whc0-et_avg[months[i]])
+            whc0 = max(0., whc0-et_avg[im[i]])
+
+
+    def insert_output(self, con, cur, aquifer, procedure, dates, rch, runoff):
+        """
+        insert or update output in output table
+        parameters
+        con: connection -already open-
+        cur: cursos to conn -already open-
+        procedure: procedure used in the calculations
+        dates, np array str: dates (aaaa-mm-dd)
+        rch, np array float: calculated recharge mm
+        runoff, np array float: calculated runoff mm
+        """
+        stm1 =\
+        f"""
+        create table if not exists {self.table_output}(
+            aquifer integer,
+            procedure text(25),
+            date text(10),
+            rch real,
+            runoff real,
+            primary key (aquifer, procedure, date)
+        )
+        """
+
+        stm2 = f'delete table {self.table_output}'
+
+        cur.execute(stm1)
+        cur.execute(stm2)
+        con.commit()
+        # TODO
+
+
+class Outcrop():
+    """
+    afloramientos permeables
+    """
+
+
+    def __init__(self, list_01: list):
+        """
+        area: outcrop area m2
+        ia: initial abstraction mm
+        kdirect: k recharge mm
+        kuz: k unsatured zone mm
+        klateral: k lateral applied to kuz mm
+        krunof: k from runoff to kuz mm
+        """
+        self.area: float =  list_01[0]
+        self.ia: float = list_01[1]
+        self.whc: float = list_01[2]
+        self.kdirect: float = list_01[3]
+        self.kuz: float = list_01[4]
+        self.klateral: float = list_01[5]
+        self.runoff: float = list_01[6]
