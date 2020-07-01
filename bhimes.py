@@ -10,14 +10,14 @@ aquifer data
     yc real, y polygon centroid
     y4326 real, latitude epgs 4326
     area real, polygon area m2
-    name text(100), aquifer name
+    name text, aquifer name
 
 outcrop data and parameters
     fid integer,
     aquifer integer, aquifer identifier
-    lito text(250), lithology
-    period text(100), geologic period, age
-    perme text(50), permeability mm/d
+    lito text, lithology
+    period text, geologic period, age
+    perme text, permeability mm/d
     area real, polygon area m2
     ia real, initial abstraccion capacity (mainly vegetation) mm
     whc real, soil water holding capacity mm
@@ -36,15 +36,19 @@ meteorologycal data related with aquifer -in this version-
 """
 import sqlite3
 from numba import jit
-import littleLogging as logging
+import numpy as np
 
 
 class BHIMES():
     """
     Balance HIdroMEteorológico en el Suelo
     Soil water balance
+    _initial_conditions: initial water conditions in ia and whc
+    _procedures: calculus procedures
     """
-    _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order
+    _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order!
+    _procedures = ('basic', 'swb01')
+
 
     def __init__(self, project: str, procedure: str = 'basic',
                  xml_org: str='bhimes.xml'):
@@ -53,6 +57,9 @@ class BHIMES():
         procedure: to calculate soil water balance
         xml_org: name of xml file with execution parameters
         """
+        if procedure not in BHIMES._procedures:
+            raise ValueError\
+            (f'arg procedure not in {",".join(BHIMES._procedures)}')
         self.proc = procedure
         self._read_params(xml_org, project)
         self._create_db()
@@ -82,18 +89,19 @@ class BHIMES():
         self.select_met = prj.find('select_met')
         self.initial_condition = prj.find('initial_condition').text\
         .strip().lower()
-        if self.initial_condition not in self._initial_conditions:
-            logging.append(f'initial condition changed from ' +\
-                           '{self.initial_condition} to normal')
-            self.initial_condition = 'normal'
+        if self.initial_condition not in BHIMES._initial_conditions:
+            raise ValueError(f'initial condition not in ' +\
+                             '{",".join(BHIMES.self._initial_condition)}')
         self.time_step = int(prj.find('time_step').text)
         if self.time_step < 1:
             self.time_step = 1
         elif self.time_step > MAX_TIME_STEP:
             self.time_step = MAX_TIME_STEP
         self.et_avg = \
-        [float(item) for item in prj.find('et_avg').text.split(',')]
+        np.array([float(item) for item in prj.find('et_avg').text.split(',')],
+                 np.float32)
         self.table_output = prj.find('table_output').text.strip()
+        self.xy_annual_dir = prj.find('xy_annual_dir').text.strip()
 
 
     def _create_db(self):
@@ -109,7 +117,7 @@ class BHIMES():
             yc real,
             y4326 real,
             area real,
-            name text(100),
+            name text,
             primary key (fid)
         )
         """
@@ -119,9 +127,9 @@ class BHIMES():
         create table if not exists outcrop(
             fid integer primary key,
             aquifer integer,
-            lito text(250),
-            period text(100),
-            perme text(50),
+            lito text,
+            period text,
+            perme text,
             area real,
             ia real,
             whc real,
@@ -154,6 +162,7 @@ class BHIMES():
         """
         con = sqlite3.connect(self.db)
         con.execute("PRAGMA foreign_keys = 1")
+
         cur = con.cursor()
         for stm in (stm1, stm2, stm3, stm4):
             try:
@@ -194,6 +203,7 @@ class BHIMES():
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
+        cur.execute("PRAGMA auto_vacuum = FULL")
 
         with open(org, 'r') as f:
             for i, line in enumerate(f):
@@ -246,6 +256,7 @@ class BHIMES():
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
+        cur.execute("PRAGMA auto_vacuum = FULL")
         cur.execute('pragma encoding="UTF-8"')
 
         with open(org, 'r') as f:
@@ -308,6 +319,7 @@ class BHIMES():
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
+        cur.execute("PRAGMA auto_vacuum = FULL")
 
         with open(org, 'r') as f:
             for i, line in enumerate(f):
@@ -347,18 +359,20 @@ class BHIMES():
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
+        cur.execute("PRAGMA auto_vacuum = FULL")
         cur.execute('attach database ? as allen', ('r0.db',))
+        self._create_output_table(con, cur)
 
         cur.execute(self.select_aquifers.text)
-        aquifers = [row for row in cur.fetchall()]
+        aquifers = [Aquifer(row) for row in cur.fetchall()]
 
         for aquifer in aquifers:
-            print(f'{aquifer[1]}')
-            cur.execute(select_r0, (int(aquifer[2]),))
+            print(f'{aquifer.name}')
+            cur.execute(select_r0, (int(aquifer.y4326),))
             sr = [row for row in cur.fetchall()]  # solar radiation -Allen-
-            cur.execute(self.select_outcrops.text, (aquifer[0],) )
-            outcrops = [row for row in cur.fetchall()]
-            cur.execute(self.select_met.text, (aquifer[0],) )
+            cur.execute(self.select_outcrops.text, (aquifer.fid,) )
+            outcrops = [Outcrop(row) for row in cur.fetchall()]
+            cur.execute(self.select_met.text, (aquifer.fid,) )
             met = np.array([row for row in cur.fetchall()])
             dates = met[:, 0]
             months = np.array([int(row[5:7])-1 for row in dates], np.int32)
@@ -368,31 +382,35 @@ class BHIMES():
                 tmax = met[:, 3].astype(np.float32)
                 tavg = met[:, 4].astype(np.float32)
                 et = np.empty((p.size), np.float32)
-                self.hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
+                self._hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
             rch = np.zeros((p.size), np.float32)
             runoff = np.zeros((p.size), np.float32)
+            etr =  np.zeros((p.size), np.float32)
             for outcrop in outcrops:
-                o = Outcrop(outcrop)
                 ia0, whc0 = self._initial_wstorages()
                 rch1 = np.zeros((p.size), np.float32)
                 runoff1 = np.zeros((p.size), np.float32)
+                etr1 =  np.zeros((p.size), np.float32)
                 if self.proc == 'basic':
-                    BHIMES.swb_basic(o.kuz, whc0, o.whc, self.et_avg,
-                                     months, p, rch1, runoff1)
+                    BHIMES._swb_basic(outcrop.kuz, whc0, outcrop.whc,
+                                      self.et_avg, months, p, rch1, runoff1,
+                                      etr1)
                 else:
-                    self.swb01_01(self.time_step, self.initial_condition,
-                                  self._initial_conditions,
-                                  outcrop, p, et, rch1, runoff1)
-                rch += rch1
-                runoff += runoff1
+                    self._swb01_01(self.time_step, ia0, whc0,
+                                  outcrop, p, et, rch1, runoff1, etr1)
+                rch += rch1 * (outcrop.area * 0.001)
+                runoff += runoff1 * (outcrop.area * 0.001)
+                etr += etr1 * (outcrop.area * 0.001)
 
-            self.insert_output(con, cur, dates, rch, runoff)
+            self._insert_output(con, cur, aquifer.fid, dates, rch, runoff, etr)
+
+        self._save_metadata(con, cur)
 
         con.close()
 
 
     @jit(nopython=True)
-    def hargreaves_samani_01(r0, im, tmax, tmin, tavg, etp):
+    def _hargreaves_samani_01(r0, im, tmax, tmin, tavg, etp):
         """
         et by hargreaves-samani
         param
@@ -408,43 +426,33 @@ class BHIMES():
 
 
     @jit(nopython=True)
-    def swb01_01(time_step, wcondition, initial_conditions, outcrop,
-                 p, et, rch, runoff):
+    def _swb01_01(time_step, ia0, whc0, outcrop, p, et, rch, runoff):
         """
         soil water balance in a temporal data serie
         parameters:
         time_step, int: number of iterations to work out water balance in
             the soil
-        wcondition str: initial vegatation and soil water condition
-        initial conditions list str: all possible initial water conditions
-        outcrop np array float: outcrops attributes
-            outcrop[iia]: initial abstraction mm
-            kdirect: k recharge mm
-            kuz: k unsatured zone
-            klateral: k lateral applied to kuz
-            krunof: k from runoff to kuz
+        ia0 float: initial ia
+        whc0 float: initial whc0
+        outcrop Outcrop: outcrops attributes
         dates np array str: dates as aaaa-mm-dd
         p, np array float: precipitacion mm
         et, np array float: potential evapotranspiration mm
         rch, np array float: recharge mm -output-
         runoff, np array float: runoff mm -output-
         """
-        iia = 1
-        iwhc = 2
 
-        ia0, whc0 = BHIMES._initial_wstorages(wcondition, initial_conditions)
-
-        ia = outcrop[iia] * ia0
-        whc = outcrop[iwhc] * whc0
-        for i in range(1, p.size):
-            p_ts, ia = BHIMES._storage_01(outcrop[ia], ia, p[i])  # ia
+        ia = outcrop.ia * ia0
+        whc = outcrop.whc * whc0
+        for i in range(p.size):
+            p_ts, ia = BHIMES._storage_01(outcrop.ia, ia, p[i])  # ia
             et_ts, ia = BHIMES._storage_et_01(ia, et[i])
 
-            nts = BHIMES.nstep_set(time_step, p[i], et[i], whc)
-            kdirect = outcrop[3] / nts
-            kuz = outcrop[4] / nts
-            klateral = outcrop[5] / nts
-            krunoff = outcrop[6] / nts
+            nts = BHIMES._nstep_set(time_step, p[i], et[i], whc)
+            kdirect = outcrop.kdirect / nts
+            kuz = outcrop.kuz / nts
+            klateral = outcrop.klateral / nts
+            krunoff = outcrop.krunoff / nts
             p_ts = p_ts / nts
             et_ts = et_ts / nts
 
@@ -454,9 +462,9 @@ class BHIMES():
                     rch[i] += min(kdirect, p_ts)
                     p_ts -= rch[i]
 
-                p_ts, whc = BHIMES._storage_01(outcrop[iwhc], whc, p_ts) # soil
+                p_ts, whc = BHIMES._storage_01(outcrop.whc, whc, p_ts) # soil
 
-                if abs(whc - outcrop[iwhc]) < 0.001:  # recharge through unsatured zone
+                if abs(whc - outcrop.whc) < 0.001:  # recharge through unsatured zone
                     x = min(kuz, p_ts)
                     rch[i] += x
                     p_ts = p_ts - x
@@ -479,9 +487,9 @@ class BHIMES():
         sets coefs. in function of water initial condition
             then
         """
-        if self.initial_conditions == self._initial_conditions[0]:
+        if self.initial_condition == self._initial_conditions[0]:
             ia0, whc0 = 0.1, 0.1
-        elif self.initial_conditions == self._initial_conditions[1]:
+        elif self.initial_condition == self._initial_conditions[1]:
             ia0, whc0 = 0.5, 0.5
         else:
             ia0, whc0 = 0.9, 0.9
@@ -531,7 +539,7 @@ class BHIMES():
 
 
     @jit(nopython=True)
-    def nstep_set(nstep0, p, et, whc):
+    def _nstep_set(nstep0, p, et, whc):
         """
         sets nstep according to p, et, whc
         """
@@ -554,16 +562,16 @@ class BHIMES():
         return nstep
 
 
-#    @jit(nopython=True)
-    @staticmethod
-    def swb_basic(kuz, cwhc0, whc, et_avg, im, p, rch, runoff):
+    @jit(nopython=True)
+#    @staticmethod
+    def _swb_basic(kuz, cwhc0, whc, et_avg, im, p, rch, runoff, etr):
         """
         basic soil water balance in a temporal data serie
         parameters:
             kuz: k unsatured zone mm
             whc0: coef >=0 y <= 1 to multiply whc
             whc: soil water holding content mm
-            et_avg: average months values of et mm -12 values, Jan. to Dec.-
+            et_avg: average values of et mm -12 values, Jan. to Dec.-
             im np array int: for a vector of observations dates,
                 im contains the month of each date -1;
                 i.e., for the date 1970-08-22 -> 8 - 1 = 7
@@ -572,7 +580,7 @@ class BHIMES():
         runoff, np array float: runoff mm -output-
         """
         whc0 = cwhc0 * whc
-        for i in range(1, p.size):
+        for i in range(p.size):
             p1 = p[i]
             x = whc - whc0
             if p1 > x:
@@ -585,38 +593,259 @@ class BHIMES():
             p1 -= rch[i]
             if p1 > 0:
                 runoff[i] = p1
-            whc0 = max(0., whc0-et_avg[im[i]])
+            if et_avg[im[i]] >= whc0:
+                etr[i] = whc0
+                whc0 = 0.
+            else:
+                etr[i] = et_avg[im[i]]
+                whc0 -= et_avg[im[i]]
 
 
-    def insert_output(self, con, cur, aquifer, procedure, dates, rch, runoff):
+    def _create_output_table(self, con, cur):
+        """
+        create the output table
+        parameters
+        con: connection -already open-
+        cur: cursor to conn -already open-
+        """
+
+        stm1 = f'drop table if exists {self.table_output}'
+
+        stm2 =\
+        f"""
+        create table if not exists {self.table_output}(
+            aquifer integer,
+            date text(10),
+            rch real,
+            runoff real,
+            etr, real,
+            primary key (aquifer, date)
+        )
+        """
+        cur.execute(stm1)
+        cur.execute(stm2)
+        con.commit()
+
+
+    def _insert_output(self, con, cur, aquifer, dates, rch, runoff, etr):
         """
         insert or update output in output table
         parameters
         con: connection -already open-
         cur: cursos to conn -already open-
-        procedure: procedure used in the calculations
         dates, np array str: dates (aaaa-mm-dd)
         rch, np array float: calculated recharge mm
         runoff, np array float: calculated runoff mm
+        etr, np array float: calculated et mm -real evapotranspiration-
+
+        There is an elegant solution at
+        https://stackoverflow.com/questions/18621513/python-insert-numpy-array
+        -into-sqlite3-database
+        witch I'm not going to apply because I want to access database outside
+        python
         """
+
         stm1 =\
         f"""
-        create table if not exists {self.table_output}(
-            aquifer integer,
-            procedure text(25),
-            date text(10),
-            rch real,
-            runoff real,
-            primary key (aquifer, procedure, date)
+        insert into {self.table_output} (aquifer, date, rch, runoff, etr)
+        values (?, ?, ?, ?, ?)
+        """
+
+        for i in range(dates.size):
+            cur.execute(stm1, (aquifer, dates[i],
+                        float(rch[i]), float(runoff[i]), float(etr[i])))
+        con.commit()
+
+
+    def _save_metadata(self, con, cur):
+        """
+        con: connection to an open database
+        cur: cursor to con
+        """
+        import datetime
+
+        stm1 = f'drop table if exists {self.table_output}_metadata'
+
+        stm2 =\
+        f"""
+        create table if not exists {self.table_output}_metadata(
+            description text
         )
         """
 
-        stm2 = f'delete table {self.table_output}'
-
+        stm3 =\
+        f"""
+        insert into {self.table_output}_metadata (description)
+        values (?)
+        """
+        et_avg = [f'{row:0.2f}' for row in self.et_avg]
+        et_avg = ','.join(et_avg)
+        metadata =\
+        (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+         self.description,
+         'calculation procedure: ' + self.proc,
+         'aquifers imported from: ' + self.file_aquifers.text,
+         'outcrops imported from: ' + self.file_outcrops.text,
+         'meteorogical data imported from: ' + self.file_met.text,
+         'aquifers select: ' + self.select_aquifers.text,
+         'outcrops select: ' + self.select_outcrops.text,
+         'met select: ' + self.select_met.text,
+         'initial_condition: ' + self.initial_condition,
+          f'time_step max: {self.time_step}',
+         'et_avg: ' + et_avg
+        )
+        metadata = '\n'.join(metadata)
         cur.execute(stm1)
         cur.execute(stm2)
+        cur.execute(stm3, (metadata,))
         con.commit()
-        # TODO
+
+
+    def save_annual_graphs(self):
+        from os.path import join
+
+        stm1 = \
+        f"""
+        select strftime('%Y', r.date) "year",
+            sum(r.rch) rch, sum(r.runoff ) runoff , sum(r.etr) etr
+        from aquifer a
+        	left join {self.table_output} r on (a.fid = r.aquifer )
+        where a.fid = ?
+        group by strftime('%Y', r.date)
+        order by strftime('%Y', r.date)
+        """
+
+        con = sqlite3.connect(self.db)
+        cur = con.cursor()
+        cur.execute(self.select_aquifers.text)
+        aquifers = [Aquifer(row) for row in cur.fetchall()]
+
+        for aquifer in aquifers:
+            print(f'{aquifer.name} xy')
+            cur.execute(stm1, (aquifer.fid,))
+            rows = np.array([row for row in cur.fetchall()])
+            years = rows[:, 0].astype(np.int32)
+            rch = rows[:, 1].astype(np.float32)
+            runoff = rows[:, 2].astype(np.float32)
+            etr = rows[:, 3].astype(np.float32)
+
+            title = f'Recarga en el acuífero {aquifer.name}'
+            ylabel = 'Rec m3/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_rch.png')
+            BHIMES._xy_plot_1g(title, years, rch, ylabel, dst)
+
+            title = f'Escorrentía en el acuífero {aquifer.name}'
+            ylabel = 'Esc m3/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_runoff.png')
+            BHIMES._xy_ts_plot_1g(title, years, runoff, ylabel, dst)
+
+            title = f'ETR en el acuífero {aquifer.name}'
+            ylabel = 'ETR m3/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_etr.png')
+            BHIMES._xy_ts_plot_1g(title, years, etr, ylabel, dst)
+
+        con.close()
+
+
+    @staticmethod
+    def _xy_ts_plot_1g(title: str, x: list, y: list, ylabel: str, dst: str):
+        """
+        Dibuja una figura con 1 gráfico (axis) xy
+        args
+        title: título de la figura
+        x: lista de objetos date
+        y: lista de valores interpolados float
+        dst: nombre fichero destino (debe incluir la extensión png)
+        """
+        import warnings
+        import matplotlib.pyplot as plt
+        import matplotlib as mpl
+        # parámetros específicos
+        warnings.simplefilter(action='ignore', category=FutureWarning)
+        mpl.rc('font', size=8)
+        mpl.rc('axes', labelsize=8, titlesize= 10, grid=True)
+        mpl.rc('axes.spines', right=False, top=False)
+        mpl.rc('xtick', direction='out', top=False)
+        mpl.rc('ytick', direction='out', right=False)
+        mpl.rc('lines', linewidth=0.8, linestyle='-', marker='.', markersize=4)
+        mpl.rc('legend', fontsize=8, framealpha=0.5, loc='best')
+
+        fig, ax = plt.subplots()
+
+        plt.suptitle(title)
+        ax.set_ylabel(ylabel)
+
+        fig.autofmt_xdate()
+
+        ax.plot(x, y)
+
+        fig.savefig(dst)
+        plt.close('all')
+        plt.rcdefaults()
+
+
+    @staticmethod
+    def _xy_plot_1g(title: str, x: list, y: list, ylabel: str, dst: str):
+        """
+        Draws an xy grpah
+        args
+        title: figure title
+        x: numpy array
+        y: numpy array
+        dst: png file name
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib as mpl
+
+        mpl.rc('font', size=8)
+        mpl.rc('axes', labelsize=8, titlesize= 10, grid=True)
+        mpl.rc('axes.spines', right=False, top=False)
+        mpl.rc('xtick', direction='out', top=False)
+        mpl.rc('ytick', direction='out', right=False)
+        mpl.rc('lines', linewidth=0.8, linestyle='-', marker='.', markersize=4)
+        mpl.rc('legend', fontsize=8, framealpha=0.5, loc='best')
+
+        fig, ax = plt.subplots()
+
+        plt.suptitle(title)
+        ax.set_ylabel(ylabel)
+
+        ax.plot(x, y)
+
+        fig.savefig(dst)
+        plt.close('all')
+        plt.rcdefaults()
+
+
+
+class Aquifer():
+    """
+    acuíferos
+    """
+
+
+    def __init__(self, data: list):
+        """
+        fid integer: identificador
+        name text: aquifer name
+        y4326 real: latitude epgs 4326
+        """
+        self.data = tuple([row for row in data])
+
+
+    @property
+    def fid(self):
+        return self.data[0]
+
+
+    @property
+    def name(self):
+        return self.data[1]
+
+
+    @property
+    def y4326(self):
+        return self.data[2]
 
 
 class Outcrop():
@@ -625,8 +854,9 @@ class Outcrop():
     """
 
 
-    def __init__(self, list_01: list):
+    def __init__(self, data: list):
         """
+        fid: identifier
         area: outcrop area m2
         ia: initial abstraction mm
         kdirect: k recharge mm
@@ -634,10 +864,44 @@ class Outcrop():
         klateral: k lateral applied to kuz mm
         krunof: k from runoff to kuz mm
         """
-        self.area: float =  list_01[0]
-        self.ia: float = list_01[1]
-        self.whc: float = list_01[2]
-        self.kdirect: float = list_01[3]
-        self.kuz: float = list_01[4]
-        self.klateral: float = list_01[5]
-        self.runoff: float = list_01[6]
+        self.data = tuple([row for row in data])
+
+
+    @property
+    def fid(self):
+        return self.data[0]
+
+
+    @property
+    def area(self):
+        return self.data[1]
+
+
+    @property
+    def ia(self):
+        return self.data[2]
+
+
+    @property
+    def whc(self):
+        return self.data[3]
+
+
+    @property
+    def kdirect(self):
+        return self.data[4]
+
+
+    @property
+    def kuz(self):
+        return self.data[5]
+
+
+    @property
+    def klateral(self):
+        return self.data[6]
+
+
+    @property
+    def runoff(self):
+        return self.data[7]

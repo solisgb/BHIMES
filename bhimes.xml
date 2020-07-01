@@ -15,7 +15,7 @@ select_outcrops: select to aquifer table; do not change this select
 select_met: select to met(eorological) table; you can change the limits of the dates to be procesed
 initial_conditions str: a value in (dry, normal, wet)
 time_step int: max iter number; between 1 and 12
-et_avg 12 float values separated by commas: average month evapotranspiration from Jan. to Dec.
+et_avg 12 float values separated by commas: average daily evapotranspiration from Jan. to Dec.
 table_output: nombre de la tabla de resultados
  -->
 <bhimes>
@@ -31,7 +31,7 @@ table_output: nombre de la tabla de resultados
 		where a.fid in (1, 4, 5, 10, 11, 13, 16, 31, 44);
 		</select_aquifers>
 		<select_outcrops>
-		select round(area,0) as sup, ia, whc, kdirect, kuz, klateral, krunoff
+		select fid, round(area,0) as sup, ia, whc, kdirect, kuz, klateral, krunoff
 		from outcrop
 		where aquifer=?;
 		</select_outcrops>
@@ -45,5 +45,6 @@ table_output: nombre de la tabla de resultados
 		<time_step>24</time_step>
 		<et_avg>0.6, 0.5, 0.7, 0.8, 0.9, 1.1, 1.2, 1.2, 0.9, 0.8, 0.7, 0.6</et_avg>
 		<table_output>recharge_202003</table_output>
+		<xy_annual_dir>H:\\off\\balan\\xy</xy_annual_dir>
 	</project>
 </bhimes>
