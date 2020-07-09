@@ -35,7 +35,7 @@ meteorologycal data related with aquifer -in this version-
     tavg real, average temperature Celsius deg
 """
 import sqlite3
-from numba import jit
+from numba import jit, void, float32, int32
 import numpy as np
 
 
@@ -347,7 +347,6 @@ class BHIMES():
         """
         soil water balance version 0.01
         """
-        import numpy as np
 
         select_r0 = \
         """
@@ -368,21 +367,24 @@ class BHIMES():
 
         for aquifer in aquifers:
             print(f'{aquifer.name}')
-            cur.execute(select_r0, (int(aquifer.y4326),))
-            sr = [row for row in cur.fetchall()]  # solar radiation -Allen-
+
             cur.execute(self.select_outcrops.text, (aquifer.fid,) )
             outcrops = [Outcrop(row) for row in cur.fetchall()]
             cur.execute(self.select_met.text, (aquifer.fid,) )
             met = np.array([row for row in cur.fetchall()])
             dates = met[:, 0]
-            months = np.array([int(row[5:7])-1 for row in dates], np.int32)
+            imonths = np.array([int(row[5:7])-1 for row in dates], np.int32)
             p = met[:,1].astype(np.float32)
             if self.proc != 'basic':
+                # solar radiation
+                cur.execute(select_r0, (int(aquifer.y4326),))
+                sr = np.array([row[0] for row in cur.fetchall()], np.float32)
+
                 tmin = met[:, 2].astype(np.float32)
                 tmax = met[:, 3].astype(np.float32)
                 tavg = met[:, 4].astype(np.float32)
                 et = np.empty((p.size), np.float32)
-                self._hargreaves_samani_01(sr, months, tmax, tmin, tavg, et)
+                BHIMES._hargreaves_samani(sr, imonths, tmax, tmin, tavg, et)
             rch = np.zeros((p.size), np.float32)
             runoff = np.zeros((p.size), np.float32)
             etr =  np.zeros((p.size), np.float32)
@@ -393,7 +395,7 @@ class BHIMES():
                 etr1 =  np.zeros((p.size), np.float32)
                 if self.proc == 'basic':
                     BHIMES._swb_basic(outcrop.kuz, whc0, outcrop.whc,
-                                      self.et_avg, months, p, rch1, runoff1,
+                                      self.et_avg, imonths, p, rch1, runoff1,
                                       etr1)
                 else:
                     self._swb01_01(self.time_step, ia0, whc0,
@@ -409,8 +411,9 @@ class BHIMES():
         con.close()
 
 
-    @jit(nopython=True)
-    def _hargreaves_samani_01(r0, im, tmax, tmin, tavg, etp):
+    @jit(void(float32[:], int32[:], float32[:], float32[:], float32[:],
+              float32[:]), nopython=True)
+    def _hargreaves_samani(r0, im, tmax, tmin, tavg, et):
         """
         et by hargreaves-samani
         param
@@ -420,9 +423,9 @@ class BHIMES():
         tmax, tmin, tavg: máx, mín, average temperature ºC
         etp (output): et mm
         """
-        for i in range(len(im)):
-            etp[i] = 0.0023 * (tavg[i] + 17.78) + r0[im[i]] \
-                * (tmax[i] - tmin[i])**0.5
+        for i in range(et.size):
+            et[i] = 0.0023 * (tavg[i] + 17.78) + r0[im[i]] \
+            * (tmax[i] - tmin[i])**0.5
 
 
     @jit(nopython=True)
@@ -745,6 +748,147 @@ class BHIMES():
             BHIMES._xy_ts_plot_1g(title, years, etr, ylabel, dst)
 
         con.close()
+
+
+    def save_annual_data_graphs(self):
+        from os.path import join
+
+        stm1 = \
+        f"""
+        select strftime('%Y', m.date) "year",
+            sum(m.p) p, avg(m.tmin ) tmin, avg(m.tmax ) tmax, avg(m.tavg ) tavg
+        from aquifer a
+        	left join met m on (a.fid = m.fid )
+        where a.fid = ?
+        group by a.fid, a.name, strftime('%Y', m.date)
+        order by a.fid, a.name, strftime('%Y', m.date)
+        """
+
+        con = sqlite3.connect(self.db)
+        cur = con.cursor()
+        cur.execute(self.select_aquifers.text)
+        aquifers = [Aquifer(row) for row in cur.fetchall()]
+
+        for aquifer in aquifers:
+            print(f'{aquifer.name} xy data')
+            cur.execute(stm1, (aquifer.fid,))
+            rows = np.array([row for row in cur.fetchall()])
+            years = rows[:, 0].astype(np.int32)
+            p = rows[:, 1].astype(np.float32)
+            tavg = rows[:, 2].astype(np.float32)
+            tmin = rows[:, 3].astype(np.float32)
+            tmax = rows[:, 4].astype(np.float32)
+
+            title = f'Precipitación en el acuífero {aquifer.name}'
+            ylabel = 'P mm/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_p.png')
+            BHIMES._xy_plot_1g(title, years, p, ylabel, dst)
+
+            title = f'Temperatura media en el acuífero {aquifer.name}'
+            ylabel = 'T ºC/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_tavg.png')
+            BHIMES._xy_ts_plot_1g(title, years, tavg, ylabel, dst)
+
+            title = f'Temperatura mín. media en el acuífero {aquifer.name}'
+            ylabel = 'T ºC/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_tmin.png')
+            BHIMES._xy_ts_plot_1g(title, years, tmin, ylabel, dst)
+
+            title = f'Temperatura máx. media en el acuífero {aquifer.name}'
+            ylabel = 'T ºC/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_tmax.png')
+            BHIMES._xy_ts_plot_1g(title, years, tmax, ylabel, dst)
+
+        con.close()
+
+
+    def save_annual_eth_graphs(self):
+        from os.path import join
+
+        create_table = \
+        """
+        create table if not exists et(
+            date text(10),
+            et real,
+            primary key(date)
+        )
+        """
+        delete_table = 'delete from et'
+        insert_data = 'insert into et (date, et) values (?, ?)'
+        drop_table = 'drop table if exists et'
+
+        select_r0 = \
+        """
+        select r0
+        from allen.r0
+        where lat = ?
+        order by "month"
+        """
+
+        stm1 = \
+        f"""
+        select  m.date, m.tmin, m.tmax, m.tavg
+        from met m
+        where m.fid = ?
+        order by m.date
+        """
+
+        stm2 = \
+        """
+        select strftime('%Y', date) "year", avg(et) etavg
+        from et
+        group by strftime('%Y', date)
+        order by strftime('%Y', date)
+        """
+
+        cont = sqlite3.connect('memory')
+        curt = cont.cursor()
+        curt.execute(create_table)
+
+        con = sqlite3.connect(self.db)
+        cur = con.cursor()
+        cur.execute('attach database ? as allen', ('r0.db',))
+        cur.execute(self.select_aquifers.text)
+        aquifers = [Aquifer(row) for row in cur.fetchall()]
+
+        for aquifer in aquifers:
+            print(f'{aquifer.name} xy eth')
+
+            # solar radiation -Allen-
+            cur.execute(select_r0, (int(aquifer.y4326),))
+            r0 = np.array([row[0] for row in cur.fetchall()], np.float32)
+
+            # t diarias
+            cur.execute(stm1, (aquifer.fid,))
+            rows = np.array([row for row in cur.fetchall()])
+            dates = rows[:, 0]
+            im = np.array([int(row[5:7])-1 for row in dates], np.int32)
+            tmin = rows[:, 1].astype(np.float32)
+            tmax = rows[:, 2].astype(np.float32)
+            tavg = rows[:, 3].astype(np.float32)
+
+            # eth
+            et = np.empty((tmin.size), np.float32)
+            BHIMES._hargreaves_samani(r0, im, tmax, tmin, tavg, et)
+
+            # xy
+            curt.execute(delete_table)
+            for i in range(dates.size):
+                curt.execute(insert_data, (dates[i], et[i]))
+            cont.commit()
+            curt.execute(stm2)
+            rows = np.array([row for row in curt.fetchall()])
+            years = rows[:, 0].astype(np.int32)
+            et = rows[:, 1].astype(np.float32)
+
+            title = f'ET Hargreaves-Samani en el acuífero {aquifer.name}'
+            ylabel = 'ET med mm/a'
+            dst = join(self.xy_annual_dir, f'{aquifer.name}_annual_eth.png')
+            BHIMES._xy_plot_1g(title, years, et, ylabel, dst)
+
+        curt.execute(drop_table)
+        con.close()
+        cont.close()
 
 
     @staticmethod
