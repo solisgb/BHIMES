@@ -2,7 +2,5 @@
 Soil water balance
 
 TODO
-
-ntimes step check
-
+ntime steps check
 swb funcs to better test
