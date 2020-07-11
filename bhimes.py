@@ -98,7 +98,7 @@ class BHIMES():
         elif self.time_step > MAX_TIME_STEP:
             self.time_step = MAX_TIME_STEP
         self.et_avg = \
-        np.array([float(item) for item in prj.find('et_avg').text.split(',')],
+        np.array([item for item in prj.find('et_avg').text.split(',')],
                  np.float32)
         self.table_output = prj.find('table_output').text.strip()
         self.xy_annual_dir = prj.find('xy_annual_dir').text.strip()
@@ -379,7 +379,6 @@ class BHIMES():
                 # solar radiation
                 cur.execute(select_r0, (int(aquifer.y4326),))
                 sr = np.array([row[0] for row in cur.fetchall()], np.float32)
-
                 tmin = met[:, 2].astype(np.float32)
                 tmax = met[:, 3].astype(np.float32)
                 tavg = met[:, 4].astype(np.float32)
@@ -389,17 +388,24 @@ class BHIMES():
             runoff = np.zeros((p.size), np.float32)
             etr =  np.zeros((p.size), np.float32)
             for outcrop in outcrops:
-                ia0, whc0 = self._initial_wstorages()
+                c_ia0, c_whc0 = self._coef_initial_wstorages()
                 rch1 = np.zeros((p.size), np.float32)
                 runoff1 = np.zeros((p.size), np.float32)
                 etr1 =  np.zeros((p.size), np.float32)
                 if self.proc == 'basic':
-                    BHIMES._swb_basic(outcrop.kuz, whc0, outcrop.whc,
+                    BHIMES._swb_basic(outcrop.kuz, outcrop.whc*c_whc0,
+                                      outcrop.whc,
                                       self.et_avg, imonths, p, rch1, runoff1,
                                       etr1)
                 else:
-                    self._swb01_01(self.time_step, ia0, whc0,
-                                  outcrop, p, et, rch1, runoff1, etr1)
+                    storages = np.array([outcrop.ia, outcrop.ia*c_ia0,
+                                         outcrop.whc, outcrop.whc*c_whc0],
+                                        np.float32)
+                    k = np.array([outcrop.kdirect, outcrop.kuz,
+                                  outcrop.klateral, outcrop.krunoff],
+                                 np.float32)
+                    self._swb01_01(self.time_step, storages, k, p, et,
+                                   rch1, runoff1, etr1)
                 rch += rch1 * (outcrop.area * 0.001)
                 runoff += runoff1 * (outcrop.area * 0.001)
                 etr += etr1 * (outcrop.area * 0.001)
@@ -428,64 +434,85 @@ class BHIMES():
             * (tmax[i] - tmin[i])**0.5
 
 
-    @jit(nopython=True)
-    def _swb01_01(time_step, ia0, whc0, outcrop, p, et, rch, runoff):
+    @jit(void(int32, float32[:], float32[:], float32[:],
+              float32[:], float32[:], float32[:], float32[:]),
+        nopython=True)
+    def _swb01_01(time_step, storages, k, p, et, rch, runoff, etr):
         """
         soil water balance in a temporal data serie
         parameters:
-        time_step, int: number of iterations to work out water balance in
-            the soil
-        ia0 float: initial ia
-        whc0 float: initial whc0
-        outcrop Outcrop: outcrops attributes
-        dates np array str: dates as aaaa-mm-dd
-        p, np array float: precipitacion mm
-        et, np array float: potential evapotranspiration mm
-        rch, np array float: recharge mm -output-
-        runoff, np array float: runoff mm -output-
+            time_step, int: number of iterations to work out water balance in
+                the soil
+            storages: array of storages values -look at initialization-
+            k: array of k values -look at initialization-
+            p: precipitacion mm
+            et: potential evapotranspiration mm
+            rch: recharge mm -output-
+            runoff: runoff mm -output-
+            etr: real evapotranspiration mm -output-
+
+        iamax, whcmax: max values of ia and whc (data)
+        ia1, whc1: initial values of ia and whc, then change in function
         """
-
-        ia = outcrop.ia * ia0
-        whc = outcrop.whc * whc0
+        iamax = storages[0]
+        ia1 = storages[1]
+        whcmax = storages[2]
+        whc1 = storages[3]
         for i in range(p.size):
-            p_ts, ia = BHIMES._storage_01(outcrop.ia, ia, p[i])  # ia
-            et_ts, ia = BHIMES._storage_et_01(ia, et[i])
+            ia1, p1 = BHIMES._storage_input(iamax, ia1, p[i])  # ia
+            ia1, etr[i] = BHIMES._storage_output(ia1, et[i])
+            et1 = et[i] - etr[i]
 
-            nts = BHIMES._nstep_set(time_step, p[i], et[i], whc)
-            kdirect = outcrop.kdirect / nts
-            kuz = outcrop.kuz / nts
-            klateral = outcrop.klateral / nts
-            krunoff = outcrop.krunoff / nts
-            p_ts = p_ts / nts
-            et_ts = et_ts / nts
+            nts = BHIMES._nstep_set(time_step, p1, et1, whc1)
+            if nts >= 0:
+                kdirect = k[0] / nts
+                kuz = k[1] / nts
+                klateral = k[2] / nts
+                krunoff = k[3] / nts
+                p1 = p1 / nts
+                et1 = et1 / nts
+            else:
+                kdirect = k[0]
+                kuz = k[1]
+                klateral = k[2]
+                krunoff = k[3]
 
             for its in (range(time_step)):
+                pi = p1
 
-                if kdirect > 0:  # direct recharge
-                    rch[i] += min(kdirect, p_ts)
-                    p_ts -= rch[i]
+                if kdirect > 0. and pi > 0.:  # direct recharge
+                    rch[i] += min(kdirect, pi)
+                    pi -= rch[i]
 
-                p_ts, whc = BHIMES._storage_01(outcrop.whc, whc, p_ts) # soil
+                whc1, pi = BHIMES._storage_input(whcmax, whc1, pi)
 
-                if abs(whc - outcrop.whc) < 0.001:  # recharge through unsatured zone
-                    x = min(kuz, p_ts)
-                    rch[i] += x
-                    p_ts = p_ts - x
+                # if soil is full of water and there is precipitation excess
+                if pi > 0. and abs(whc1-whcmax) < 0.0001:
+                    r1 = min(kuz, pi)
+                    pi -= r1
 
-                if p_ts > 0. and krunoff > 0.:
-                    x = min(krunoff, p_ts)
-                    p_ts = p_ts - x
+                    if krunoff > 0. and pi > 0.:
+                        r2 = min(krunoff, pi)
+                        pi -= r2
+                    else:
+                        r2 = 0.
 
-                if klateral > 0 and rch[i] > 0:
-                    x = min(klateral, rch[i])
-                    rch[i] -= x
+                    r3 = r1 + r2
 
-                runoff[i] += p_ts
+                    if klateral > 0 and r3 > 0.:
+                        r3 = min(klateral, r3)
 
-                BHIMES._storage_et_01(whc, et_ts)
+                    rch[i] += r3
+
+                    if pi > 0.:
+                        runoff[i] += pi
+                        pi = 0.  # unnecessary assignment
+
+                whc1, et1 = BHIMES._storage_output(whc1, et1)
+                etr[i] = et[i] - et1
 
 
-    def _initial_wstorages(self):
+    def _coef_initial_wstorages(self):
         """
         sets coefs. in function of water initial condition
             then
@@ -500,7 +527,7 @@ class BHIMES():
 
 
     @jit(nopython=True)
-    def _storage_01(smax, scurrent, wi):
+    def _storage_input(smax, scurrent, wi):
         """
         water balance in a storage
         parameters:
@@ -508,37 +535,37 @@ class BHIMES():
             scurrent: current water storage (at the beginning)
             wi: water input
         output:
-            wo: water not in the storage
+            we: water excess
             sfinal: storage at the end of the water balance
         """
-        sdry = smax - wi
-        if wi > sdry:
-            wo = wi - sdry
+        sdry = smax - scurrent
+        if wi >= sdry:
+            we = wi - sdry
             sfinal = smax
         else:
-            wo = 0.
+            we = 0.
             sfinal = scurrent + wi
-        return wo, sfinal
+        return sfinal, we
 
 
     @jit(nopython=True)
-    def _storage_et_01(scurrent, pwr):
+    def _storage_output(s0, pwr):
         """
         soil water release -et-
         parameters:
-            scurrent: current water storage (at the beginning)
+            s0: initial water storage
             pwr: potential water release
         output:
-            pwr_final: pwr at the end of the balance
-            sfinal: storage at the end of the water balance
+            sfinal: final water storage
+            wr: water release
         """
-        if pwr > scurrent:
-            pwr_final = pwr - scurrent
+        if pwr >= s0:
+            wr = s0
             sfinal = 0.
         else:
-            pwr_final = 0.
-            sfinal = scurrent - pwr
-        return pwr_final, sfinal
+            wr = pwr
+            sfinal = s0 - pwr
+        return sfinal, wr
 
 
     @jit(nopython=True)
@@ -565,43 +592,44 @@ class BHIMES():
         return nstep
 
 
-    @jit(nopython=True)
-#    @staticmethod
-    def _swb_basic(kuz, cwhc0, whc, et_avg, im, p, rch, runoff, etr):
+    @jit(void(float32, float32, float32, float32[:], int32[:],
+              float32[:], float32[:], float32[:], float32[:] ), nopython=True)
+    def _swb_basic(kuz, whc0, whc, et_avg, im, p, rch, runoff, etr):
         """
         basic soil water balance in a temporal data serie
         parameters:
             kuz: k unsatured zone mm
-            whc0: coef >=0 y <= 1 to multiply whc
+            whc0: initial whc
             whc: soil water holding content mm
             et_avg: average values of et mm -12 values, Jan. to Dec.-
-            im np array int: for a vector of observations dates,
+            im: for a vector of observations dates,
                 im contains the month of each date -1;
                 i.e., for the date 1970-08-22 -> 8 - 1 = 7
-        p, np array float: precipitacion mm
+        p: precipitacion mm
         rch, np array float: recharge mm -output-
-        runoff, np array float: runoff mm -output-
+        runoff: runoff mm -output-
+        et: real evapotranspiration mm -output-
         """
-        whc0 = cwhc0 * whc
+        whc1 = whc0
         for i in range(p.size):
             p1 = p[i]
-            x = whc - whc0
+            x = whc - whc1
             if p1 > x:
                 p1 -= x
-                whc0 = whc
+                whc1 = whc
             else:
                 p1 = 0
-                whc0 += p1
+                whc1 += p1
             rch[i] = min(kuz, p1)
             p1 -= rch[i]
             if p1 > 0:
                 runoff[i] = p1
-            if et_avg[im[i]] >= whc0:
-                etr[i] = whc0
-                whc0 = 0.
+            if et_avg[im[i]] >= whc1:
+                etr[i] = whc1
+                whc1 = 0.
             else:
                 etr[i] = et_avg[im[i]]
-                whc0 -= et_avg[im[i]]
+                whc1 -= et_avg[im[i]]
 
 
     def _create_output_table(self, con, cur):
