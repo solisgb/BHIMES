@@ -434,16 +434,16 @@ class BHIMES():
             * (tmax[i] - tmin[i])**0.5
 
 
-    @jit(void(int32, float32[:], float32[:], float32[:],
-              float32[:], float32[:], float32[:], float32[:]),
-        nopython=True)
-    def _swb01_01(time_step, storages, k, p, et, rch, runoff, etr):
+#    @jit(void(int32, float32[:], float32[:], float32[:],
+#              float32[:], float32[:], float32[:], float32[:]),
+#        nopython=True)
+    def _swb01_01(ntimestep, storages, k, p, et, rch, runoff, etr):
         """
         soil water balance in a temporal data serie
         parameters:
-            time_step, int: number of iterations to work out water balance in
+            ntimestep: number of iterations to work out water balance in
                 the soil
-            storages: array of storages values -look at initialization-
+            storages: array of water storages values -look at initialization-
             k: array of k values -look at initialization-
             p: precipitacion mm
             et: potential evapotranspiration mm
@@ -463,8 +463,8 @@ class BHIMES():
             ia1, etr[i] = BHIMES._storage_output(ia1, et[i])
             et1 = et[i] - etr[i]
 
-            nts = BHIMES._nstep_set(time_step, p1, et1, whc1)
-            if nts >= 0:
+            nts = BHIMES._nstep_set(ntimestep, p, whcmax, whc1)
+            if nts > 1:
                 kdirect = k[0] / nts
                 kuz = k[1] / nts
                 klateral = k[2] / nts
@@ -477,8 +477,9 @@ class BHIMES():
                 klateral = k[2]
                 krunoff = k[3]
 
-            for its in (range(time_step)):
+            for i_time_step in range(nts):
                 pi = p1
+                eti = et1
 
                 if kdirect > 0. and pi > 0.:  # direct recharge
                     rch[i] += min(kdirect, pi)
@@ -500,16 +501,18 @@ class BHIMES():
                     r3 = r1 + r2
 
                     if klateral > 0 and r3 > 0.:
-                        r3 = min(klateral, r3)
+                        r4 = min(klateral, r3)
+                        r3 -= r4
 
                     rch[i] += r3
 
                     if pi > 0.:
                         runoff[i] += pi
-                        pi = 0.  # unnecessary assignment
+                        pi = 0.  # pedagogical assignment
 
-                whc1, et1 = BHIMES._storage_output(whc1, et1)
-                etr[i] = et[i] - et1
+                whc1, eti = BHIMES._storage_output(whc1, eti)
+                x = et1 - eti
+                etr[i] -= x
 
 
     def _coef_initial_wstorages(self):
@@ -549,47 +552,46 @@ class BHIMES():
 
 
     @jit(nopython=True)
-    def _storage_output(s0, pwr):
+    def _storage_output(whc0, pwr):
         """
         soil water release -et-
         parameters:
-            s0: initial water storage
-            pwr: potential water release
+            whc0: initial water holding content
+            pwr: potential water release -max water release-
         output:
-            sfinal: final water storage
+            shc1: final water holding content
             wr: water release
         """
-        if pwr >= s0:
-            wr = s0
-            sfinal = 0.
+        if pwr >= whc0:
+            wr = whc0
+            whc1 = 0.
         else:
             wr = pwr
-            sfinal = s0 - pwr
-        return sfinal, wr
+            whc1 = whc0 - pwr
+        return whc1, wr
 
 
     @jit(nopython=True)
-    def _nstep_set(nstep0, p, et, whc):
+    def _nstep_set(nstep0, p, whcmax, whc0):
         """
         sets nstep according to p, et, whc
         """
         if nstep0 == 1:
             return 1
 
-        minp = 2.
-        minet = 0.1 * whc
-        if minet < 0.25:
-            minet = 0.25
-
+        minp = 1.
         if p < minp:
-            nstep = 1
+            return 1
+
+        sdry = whcmax - whc0
+        if p < sdry:
+            return 1
         else:
-            for i in range(nstep0):
-                nstep = i + 1
-                x = et / nstep
-                if x < minet:
-                    break
-        return nstep
+            for i in range(nstep0, 1, -1):
+                x = sdry / i
+                if x >= minp:
+                    return i
+        return i
 
 
     @jit(void(float32, float32, float32, float32[:], int32[:],
