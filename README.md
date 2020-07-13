@@ -1,8 +1,9 @@
 # BHIMES
 Soil water balance
 
-TODO
+in process
 
-ntime steps check
+soil water balance functions are migrating to swb module
 
-swb funcs to better test
+parameter sensitivity analysis
+
