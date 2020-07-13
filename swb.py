@@ -4,8 +4,12 @@ Created on Sun Jul 12 12:37:35 2020
 
 @author: solis
 """
+from os.path import join
+import sqlite3
+
 from numba import jit, void, float32, int32
 import numpy as np
+
 
 #    @jit(void(int32, float32[:], float32[:], float32[:],
 #              float32[:], float32[:], float32[:], float32[:]),
@@ -55,8 +59,9 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
             eti = et1
 
             if kdirect > 0. and pi > 0.:  # direct recharge
-                rch[i] += min(kdirect, pi)
-                pi -= rch[i]
+                r1 = min(kdirect, pi)
+                rch[i] += r1
+                pi -= r1
 
             whc1, pi = _storage_input(whcmax, whc1, pi)
 
@@ -171,34 +176,49 @@ def _nstep_set(nstep0, p, whcmax, whc0):
 
 class Parameter__sensivity():
     """
-    run soil water balance function in a provided range of parameter values
-    the results are stored in an sqlite file with the function name
+    run soil water balance function in a given range of parameter values
+    the results are stored in an csv or sqlite file with the function name
+    parameters tested: whc kuz
     """
 
 
-    def __init__(self, dir_out: str, kuzparam, whcparam):
+    def __init__(self, dir_out: str, param: dict):
         """
         dir_out: directory with data
-        kuzparam, whcparam: SParameter instances for kuz y whc
+        param: param to test
+            for each element: key parameter name, values a sequence of 3
+            element(min value, max value, num of tries between min and max)
         """
         self.dir_out = dir_out
-        self.kuz = kuzparam
-        self.whc = whcparam
+        self.param = param
+
+
+    def pmin(self, par_name: str):
+        return min(self.param[par_name][0:2])
+
+
+    def pmax(self, par_name: str):
+        return max(self.param[par_name][0:2])
+
+    def n(self, par_name: str):
+        return self.param[par_name][2]
+
+
+    def delta_get(self, par_name: str):
+        return (self.pmax(par_name) - self.pmin(par_name)) / self.n(par_name)
 
 
     def swb01_parameter_sensivity(self,ntimestep, storages, k, p, et,
-                                  rch, runoff, etr):
-        from inspect import function
-        from os.path import join
-        import sqlite3
+                                  rch, runoff, etr, output_type='csv'):
 
-        fname = join(self.dir_out, function.func_name)
+        dbname = join(self.dir_out, 'swb01_parameter_sensivity'+'.db')
+        tname = 'swb01'
 
-        drop_table = f'drop table if exists {fname}'
+        drop_table = f'drop table if exists {tname}'
 
         create_table = \
         f"""
-        create table if not exists {fname} (
+        create table if not exists {tname} (
             fid integer,
             ntimestep integer,
             iamax real,
@@ -221,7 +241,7 @@ class Parameter__sensivity():
         """
 
         insert = f"""
-        insert into {fname}
+        insert into {tname}
         (fid, ntimestep, iamax, ia0, whcmax, whc0, kdirect, kuz, klateral,
          krunoff, ndata, psum, npgt0, etsum, rchsum, runoffsum, etrsum)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -231,55 +251,60 @@ class Parameter__sensivity():
         psum = p.sum()
         npgt0 = np.count_nonzero(p > 0.)
         etsum = np.sum(et)
-        fname = function.func_name
 
-        con = sqlite3.connect(fname + '.db')
-        cur = con.cursor()
-        cur.execute(drop_table)
-        cur.execute(create_table)
+        if output_type != 'csv':
+            con = sqlite3.connect(dbname)
+            cur = con.cursor()
+            cur.execute(drop_table)
+            cur.execute(create_table)
 
         n = 0
-        x1 = self.kuz.delta_get()
-        x2 = self.whc.delta_get()
-        for i in range(self.kuz.n):
+        x1 = self.delta_get('kuz')
+        x2 = self.delta_get('whc')
+
+        fo = open(join(self.dir_out, 'swb01_sensivity_analisys.csv'), 'w')
+        fo.write('fid,ntimestep,iamax,ia0,whcmax,whc0,kdirect,kuz,'
+                 'klateral,krunoff,ndata,psum,npgt0,etsum,rchsum,'
+                 'runoffsum,etrsum\n')
+
+        for i in range(self.n('kuz')):
             xk = np.copy(k)
-            xk[1] = self.kuz.pmin + (x1 * i)
-            for j in range(self.whc.n):
+            xk[1] = self.pmin('kuz') + (x1 * i)
+            for j in range(self.n('whc')):
                 n += 1
-                print(f'n:n')
+                print(f'{n:n}')
                 xstorages = np.copy(storages)
-                xstorages[2] = self.whc.pmin + (j * x2)
+                xstorages[2] = self.pmin('whc') + (j * x2)
+                rch[:] = 0.
+                runoff[:] = 0.
+                etr[:] = 0.
                 swb01(ntimestep, xstorages, xk, p, et, rch, runoff, etr)
 
-#structured array
-#x = np.array([('Rex', 9, 81.0), ('Fido', 3, 27.0)],
-#...              dtype=[('name', 'U10'), ('age', 'i4'), ('weight', 'f4')])
+                if output_type != 'csv':
+                    cur.execute(insert, (n, ntimestep,
+                                     float(xstorages[0]), float(xstorages[1]),
+                                     float(xstorages[2]), float(xstorages[3]),
+                                     float(xk[0]), float(xk[1]), float(xk[2]),
+                                     float(xk[3]),
+                                     ndata, float(psum), int(npgt0),
+                                     float(etsum),
+                                     float(rch.sum()), float(runoff.sum()),
+                                     float(etr.sum())))
+                else:
+                    fo.write(f'{n:n},{ntimestep:n},{xstorages[0]:0.2f},'
+                             f'{xstorages[1]:0.2f},{xstorages[2]:0.2f},'
+                             f'{xstorages[3]:0.2f},{xk[0]:0.2f},{xk[1]:0.2f},'
+                             f'{xk[2]:0.2f},{xk[3]:0.2f},'
+                             f'{ndata:n},{psum:0.2f},{npgt0:n},{etsum:0.2f},'
+                             f'{rch.sum():0.2f},{runoff.sum():0.2f},'
+                             f'{etr.sum():0.2f}\n')
 
-                cur.execute(insert, (n, ntimestep,
-                                     xstorages[0], xstorages[1],
-                                     xstorages[2], xstorages[3],
-                                     xk[0], xk[1], xk[2], xk[3],
-                                     ndata, psum, npgt0, etsum,
-                                     rch.sum(), runoff.sum(), etr.sum()))
-
-                np.savetxt(join(self.dir_out,
-                                f'{n:n}_{fname}.csv'), (rch, runoff, etr),
-                           delimiter=',')
-        con.close()
-
-
-class SParameter():
-    """
-    soil water balance parameter in wich sensivity will be analyzed
-    """
-    def __init__(self, pmin: float, pmax: float, nvalues: int):
-        self.pmin: float = min(pmin, pmax)
-        self.pmax: float = min(pmin, pmax)
-        if nvalues < 1:
-            nvalues = 1
-        self.n: int = nvalues
-
-
-    def delta_get(self):
-        return (self.pmax - self.pmin) / self.n
-
+                np.savetxt(join(self.dir_out, f'{n:n}_{tname}.csv'),
+                           np.transpose([rch, runoff, etr]),
+                           delimiter=',', fmt='%0.2f',
+                           header='recarge,runoff,etr')
+        if output_type != 'csv':
+            con.commit()
+            con.close()
+        else:
+            fo.close()
