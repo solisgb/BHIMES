@@ -170,24 +170,29 @@ def _nstep_set(nstep0, p, whcmax, whc0):
 
 
 class Parameter__sensivity():
+    """
+    run soil water balance function in a provided range of parameter values
+    the results are stored in an sqlite file with the function name
+    """
 
 
-    def __init__(self, kuzmax, kuzmin, nkuz,
-                 whcmax, whcmin, nwhc):
-        self.kuzmax = kuzmax
-        self.kuzmin = kuzmin
-        self.nkuz = nkuz
-        self.whcmax = whcmax
-        self.whcmin = whcmin
-        self.nwhc = nwhc
+    def __init__(self, dir_out: str, kuzparam, whcparam):
+        """
+        dir_out: directory with data
+        kuzparam, whcparam: SParameter instances for kuz y whc
+        """
+        self.dir_out = dir_out
+        self.kuz = kuzparam
+        self.whc = whcparam
 
 
     def swb01_parameter_sensivity(self,ntimestep, storages, k, p, et,
                                   rch, runoff, etr):
         from inspect import function
+        from os.path import join
         import sqlite3
 
-        fname = function.func_name
+        fname = join(self.dir_out, function.func_name)
 
         drop_table = f'drop table if exists {fname}'
 
@@ -204,12 +209,13 @@ class Parameter__sensivity():
             kuz real,
             klateral real,
             krunoff real,
-            p real,
-            np real,
-            et real,
-            rch real,
-            runoff real,
-            etr real,
+            ndata integer,
+            psum real,
+            npgt0 real,
+            etsum real,
+            rchsum real,
+            runoffsum real,
+            etrsum real,
             primary key(fid)
         )
         """
@@ -217,33 +223,63 @@ class Parameter__sensivity():
         insert = f"""
         insert into {fname}
         (fid, ntimestep, iamax, ia0, whcmax, whc0, kdirect, kuz, klateral,
-         krunoff, p, np, et, rch, runoff, etr)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         krunoff, ndata, psum, npgt0, etsum, rchsum, runoffsum, etrsum)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
+        ndata = p.size
         psum = p.sum()
-        np = np.count_nonzero(p > 0.)
-        etavg = np.average(et)
+        npgt0 = np.count_nonzero(p > 0.)
+        etsum = np.sum(et)
+        fname = function.func_name
 
-        con = sqlite3.connect(function.func_name + '.db')
+        con = sqlite3.connect(fname + '.db')
         cur = con.cursor()
         cur.execute(drop_table)
         cur.execute(create_table)
 
-        x1 = (self.kuzmax - self.kuzmin) / self.nkuz
-        for i in range(self.nkuz):
-            kuzmax = self.kuzmin + (x1 * i)
+        n = 0
+        x1 = self.kuz.delta_get()
+        x2 = self.whc.delta_get()
+        for i in range(self.kuz.n):
             xk = np.copy(k)
-            xk[1] = kuzmax
-            x2 = (self.whcmax - self.whcmin) / self.nwhc
-            for j in range(self.nwhc):
-                whc = self.whcmin + (j * x2)
+            xk[1] = self.kuz.pmin + (x1 * i)
+            for j in range(self.whc.n):
+                n += 1
+                print(f'n:n')
                 xstorages = np.copy(storages)
-                xstorages[2] = whc
+                xstorages[2] = self.whc.pmin + (j * x2)
                 swb01(ntimestep, xstorages, xk, p, et, rch, runoff, etr)
 
-                cur.execute(insert, (ntimestep,
+#structured array
+#x = np.array([('Rex', 9, 81.0), ('Fido', 3, 27.0)],
+#...              dtype=[('name', 'U10'), ('age', 'i4'), ('weight', 'f4')])
+
+                cur.execute(insert, (n, ntimestep,
                                      xstorages[0], xstorages[1],
                                      xstorages[2], xstorages[3],
                                      xk[0], xk[1], xk[2], xk[3],
-                                     p.sum(), ))
+                                     ndata, psum, npgt0, etsum,
+                                     rch.sum(), runoff.sum(), etr.sum()))
+
+                np.savetxt(join(self.dir_out,
+                                f'{n:n}_{fname}.csv'), (rch, runoff, etr),
+                           delimiter=',')
+        con.close()
+
+
+class SParameter():
+    """
+    soil water balance parameter in wich sensivity will be analyzed
+    """
+    def __init__(self, pmin: float, pmax: float, nvalues: int):
+        self.pmin: float = min(pmin, pmax)
+        self.pmax: float = min(pmin, pmax)
+        if nvalues < 1:
+            nvalues = 1
+        self.n: int = nvalues
+
+
+    def delta_get(self):
+        return (self.pmax - self.pmin) / self.n
+
