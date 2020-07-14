@@ -1,13 +1,4 @@
 # BHIMES
-Soil water balance
+Soil water balance -Balance HIdroMeteorológico del Suelo-
 
-TODO
-
-error in water balance input = output + storage change
-
-in process
-
-soil water balance functions are being migrated to swb module
-
-
-
+BHIMES module calls swb module where soil water function is defined
