@@ -6,13 +6,13 @@ Created on Sun Jun 21 12:50:31 2020
 
 to execute, complete parameters in bhimes.xml and set project and proc values
 project: projet in bhimes.xml -several are possible-
-proc: calculation procedure; implemented ('basic', 'swb01')
+et_proc: et calculation procedure; implemented ('basic', 'hargreaves')
 annual_graphs: if True save png files
 """
 import littleLogging as logging
 
 project: str = 'BDA202006'
-proc: str = 'basic'
+et_proc: str = 'hargreaves'
 annual_graphs: bool = False
 
 if __name__ == "__main__":
@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
         startTime = time()
 
-        b = BHIMES(project, proc)
+        b = BHIMES(project, et_proc)
         b.aquifer_upsert_from_file()  # controlled in xml
         b.outcrop_upsert_from_file()
         b.met_upsert_from_file01()

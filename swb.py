@@ -11,9 +11,9 @@ from numba import jit, void, float32, int32
 import numpy as np
 
 
-#    @jit(void(int32, float32[:], float32[:], float32[:],
-#              float32[:], float32[:], float32[:], float32[:]),
-#        nopython=True)
+@jit(void(int32, float32[:], float32[:], float32[:],
+          float32[:], float32[:], float32[:], float32[:]),
+    nopython=True)
 def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
     """
     soil water balance in a temporal data serie
@@ -36,9 +36,10 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
     whcmax = storages[2]
     whc1 = storages[3]
     for i in range(p.size):
+        total_storage0 = ia1 + whc1
         ia1, p1 = _storage_input(iamax, ia1, p[i])  # ia
-        ia1, etr[i] = _storage_output(iamax, ia1, et[i])
-        et1 = et[i] - etr[i]
+        ia1, etr_ia = _storage_output(iamax, ia1, et[i])
+        et1 = et[i] - etr_ia
 
         nts = _nstep_set(ntimestep, p1, whcmax, whc1)
         if nts > 1:
@@ -85,12 +86,19 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
                 rch[i] += r3
 
                 if pi > 0.:
+                    r5 = pi
                     runoff[i] += pi
                     pi = 0.  # pedagogical assignment
+            else:
+                r3 = r4 = r5 = 0.
 
-            whc1, eti = _storage_output(whcmax, whc1, eti)
-            x = et1 - eti
-            etr[i] += x
+            whc1, etr_soil = _storage_output(whcmax, whc1, eti)
+            etr[i] += etr_ia + etr_soil
+            balan = p[i] - etr_ia - r3 - r4 - r5 - etr_soil +\
+            total_storage0 - ia1 - whc1
+            if abs(balan) > 0.001:
+                return i, balan
+    return -1, 0.0
 
 
 def _coef_initial_wstorages(self):
@@ -107,7 +115,7 @@ def _coef_initial_wstorages(self):
     return ia0, whc0
 
 
-@jit(nopython=True)
+@jit(float32[:](float32, float32, float32), nopython=True)
 def _storage_input(smax, scurrent, wi):
     """
     water balance in a storage
@@ -174,6 +182,23 @@ def _nstep_set(nstep0, p, whcmax, whc0):
     return i
 
 
+    @jit(void(float32[:], int32[:], float32[:], float32[:], float32[:],
+              float32[:]), nopython=True)
+    def hargreaves_samani(r0, im, tmax, tmin, tavg, et):
+        """
+        et by hargreaves-samani
+        param
+        r0: extraterrestrial radiation mm
+        im: for a vector of daily observation dates, im has the month of each
+            date -1; ie, for the date 1970-08-22 -> 8 - 1 = 7
+        tmax, tmin, tavg: máx, mín, average temperature ºC
+        etp (output): et mm
+        """
+        for i in range(et.size):
+            et[i] = 0.0023 * (tavg[i] + 17.78) + r0[im[i]] \
+            * (tmax[i] - tmin[i])**0.5
+
+
 class Parameter__sensivity():
     """
     run soil water balance function in a given range of parameter values
@@ -182,7 +207,7 @@ class Parameter__sensivity():
     """
 
 
-    def __init__(self, dir_out: str, param: dict):
+    def __init__(self, dir_out: str, param: dict, description: str='test'):
         """
         dir_out: directory with data
         param: param to test
@@ -191,6 +216,7 @@ class Parameter__sensivity():
         """
         self.dir_out = dir_out
         self.param = param
+        self.description = description
 
 
     def pmin(self, par_name: str):
@@ -210,6 +236,15 @@ class Parameter__sensivity():
 
     def swb01_parameter_sensivity(self,ntimestep, storages, k, p, et,
                                   rch, runoff, etr, output_type='csv'):
+        """
+        calls to swb01 sensitivity using a range of predefined values of
+            whc and kuz arameters
+        to add more parameters to evaluate in a range, it's need to modify
+            the function
+        """
+
+        if output_type not in ('csv', 'sqlite'):
+            raise ValueError(f'{output_type} is not a valid output_type')
 
         dbname = join(self.dir_out, 'swb01_parameter_sensivity'+'.db')
         tname = 'swb01'
@@ -252,20 +287,21 @@ class Parameter__sensivity():
         npgt0 = np.count_nonzero(p > 0.)
         etsum = np.sum(et)
 
-        if output_type != 'csv':
+        n = 0
+        x1 = self.delta_get('kuz')
+        x2 = self.delta_get('whc')
+        toxy = []
+
+        if output_type == 'csv':
+            fo = open(join(self.dir_out, 'swb01_sensivity_analisys.csv'), 'w')
+            fo.write('fid,ntimestep,iamax,ia0,whcmax,whc0,kdirect,kuz,'
+                     'klateral,krunoff,ndata,psum,npgt0,etsum,rchsum,'
+                     'runoffsum,etrsum\n')
+        else:
             con = sqlite3.connect(dbname)
             cur = con.cursor()
             cur.execute(drop_table)
             cur.execute(create_table)
-
-        n = 0
-        x1 = self.delta_get('kuz')
-        x2 = self.delta_get('whc')
-
-        fo = open(join(self.dir_out, 'swb01_sensivity_analisys.csv'), 'w')
-        fo.write('fid,ntimestep,iamax,ia0,whcmax,whc0,kdirect,kuz,'
-                 'klateral,krunoff,ndata,psum,npgt0,etsum,rchsum,'
-                 'runoffsum,etrsum\n')
 
         for i in range(self.n('kuz')):
             xk = np.copy(k)
@@ -278,7 +314,11 @@ class Parameter__sensivity():
                 rch[:] = 0.
                 runoff[:] = 0.
                 etr[:] = 0.
-                swb01(ntimestep, xstorages, xk, p, et, rch, runoff, etr)
+                ier, xer = swb01(ntimestep, xstorages, xk, p, et, rch, runoff,
+                                 etr)
+                if ier >= 0:
+                    raise ValueError(f'Balance error in iter {ier:n}',
+                                     f'balan error {xer:0.2f}')
 
                 if output_type != 'csv':
                     cur.execute(insert, (n, ntimestep,
@@ -299,12 +339,45 @@ class Parameter__sensivity():
                              f'{rch.sum():0.2f},{runoff.sum():0.2f},'
                              f'{etr.sum():0.2f}\n')
 
+                toxy.append([xstorages[2], xk[1], rch.sum(), runoff.sum(),
+                             etr.sum()])
                 np.savetxt(join(self.dir_out, f'{n:n}_{tname}.csv'),
                            np.transpose([rch, runoff, etr]),
                            delimiter=',', fmt='%0.2f',
                            header='recarge,runoff,etr')
+
         if output_type != 'csv':
             con.commit()
             con.close()
         else:
             fo.close()
+
+        toxy = np.array(toxy, np.float32)
+        for i, item in enumerate(('recharge', 'runoff', 'etr')):
+            _contour(f'{self.description} {item}', toxy[:, 0], toxy[:, 1],
+                     toxy[:, i+2], 'whc', 'kuz',
+                     join(self.dir_out, f'swb01_contour_{item}'))
+
+
+def _contour(title, x, y, z, xlabel, ylabel, dst, scale: float=1.0):
+    """
+    3D representarion of the results
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax1 = plt.subplots()
+
+    ax1.tricontour(x*scale, y*scale, z*scale, levels=14, linewidths=0.5,
+                   colors='k')
+    cntr1 = ax1.tricontourf(x, y, z, levels=14, cmap="RdBu_r")
+
+    fig.colorbar(cntr1, ax=ax1)
+    ax1.plot(x, y, 'ko', ms=3)
+    ax1.set_title(title)
+    ax1.set_xlabel(xlabel)
+    ax1.set_ylabel(ylabel)
+
+    plt.subplots_adjust(hspace=0.5)
+    plt.show()
+    fig.savefig(dst)
+    plt.close('all')

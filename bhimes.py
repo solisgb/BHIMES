@@ -4,6 +4,9 @@ Created on Sun Jun 21 12:51:28 2020
 
 @author: solis
 
+module to evaluate hidrometeorological soil water balance using
+    functions in swb module
+
 aquifer data
     fid integer
     xc real, x polygon centroid
@@ -38,29 +41,31 @@ import sqlite3
 from numba import jit, void, float32, int32
 import numpy as np
 
+import swb
+
 
 class BHIMES():
     """
     Balance HIdroMEteorológico en el Suelo
     Soil water balance
     _initial_conditions: initial water conditions in ia and whc
-    _procedures: calculus procedures
+    _et_procedures: procedures to evaluate et
     """
     _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order!
-    _procedures = ('basic', 'swb01')
+    _et_procedures = ('basic', 'hargreaves')
 
 
-    def __init__(self, project: str, procedure: str = 'basic',
+    def __init__(self, project: str, et_proc: str = 'basic',
                  xml_org: str='bhimes.xml'):
         """
         project: project name in xml_org
-        procedure: to calculate soil water balance
+        proc: procedure to calculate et
         xml_org: name of xml file with execution parameters
         """
-        if procedure not in BHIMES._procedures:
+        if et_proc not in BHIMES._et_procedures:
             raise ValueError\
-            (f'arg procedure not in {",".join(BHIMES._procedures)}')
-        self.proc = procedure
+            (f'arg procedure not in {",".join(BHIMES._et_procedures)}')
+        self.proc = et_proc
         self._read_params(xml_org, project)
         self._create_db()
 
@@ -97,9 +102,10 @@ class BHIMES():
             self.time_step = 1
         elif self.time_step > MAX_TIME_STEP:
             self.time_step = MAX_TIME_STEP
-        self.et_avg = \
-        np.array([item for item in prj.find('et_avg').text.split(',')],
-                 np.float32)
+        if self.proc == 'basic':
+            self.et_avg = \
+            np.array([item for item in prj.find('et_avg').text.split(',')],
+                     np.float32)
         self.table_output = prj.find('table_output').text.strip()
         self.xy_annual_dir = prj.find('xy_annual_dir').text.strip()
 
@@ -347,6 +353,9 @@ class BHIMES():
         """
         soil water balance version 0.01
         """
+        from os.path import dirname, join
+
+        metadata_file = 'swb01_metadata.csv'
 
         select_r0 = \
         """
@@ -364,6 +373,8 @@ class BHIMES():
 
         cur.execute(self.select_aquifers.text)
         aquifers = [Aquifer(row) for row in cur.fetchall()]
+        fmeta = open(join(dirname(self.db), metadata_file), 'w')
+        self._write_metadata_base(fmeta)
 
         for aquifer in aquifers:
             print(f'{aquifer.name}')
@@ -375,15 +386,17 @@ class BHIMES():
             dates = met[:, 0]
             imonths = np.array([int(row[5:7])-1 for row in dates], np.int32)
             p = met[:,1].astype(np.float32)
-            if self.proc != 'basic':
+            et = np.empty((p.size), np.float32)
+            if self.proc == 'hargreaves':
                 # solar radiation
                 cur.execute(select_r0, (int(aquifer.y4326),))
                 sr = np.array([row[0] for row in cur.fetchall()], np.float32)
                 tmin = met[:, 2].astype(np.float32)
                 tmax = met[:, 3].astype(np.float32)
                 tavg = met[:, 4].astype(np.float32)
-                et = np.empty((p.size), np.float32)
-                BHIMES._hargreaves_samani(sr, imonths, tmax, tmin, tavg, et)
+                swb.hargreaves_samani(sr, imonths, tmax, tmin, tavg, et)
+            else:
+                BHIMES._et_averaged_set(imonths, self.et_avg, et)
             rch = np.zeros((p.size), np.float32)
             runoff = np.zeros((p.size), np.float32)
             etr =  np.zeros((p.size), np.float32)
@@ -392,246 +405,41 @@ class BHIMES():
                 rch1 = np.zeros((p.size), np.float32)
                 runoff1 = np.zeros((p.size), np.float32)
                 etr1 =  np.zeros((p.size), np.float32)
-                if self.proc == 'basic':
-                    BHIMES._swb_basic(outcrop.kuz, outcrop.whc*c_whc0,
-                                      outcrop.whc,
-                                      self.et_avg, imonths, p, rch1, runoff1,
-                                      etr1)
-                else:
-                    storages = np.array([outcrop.ia, outcrop.ia*c_ia0,
-                                         outcrop.whc, outcrop.whc*c_whc0],
-                                        np.float32)
-                    k = np.array([outcrop.kdirect, outcrop.kuz,
-                                  outcrop.klateral, outcrop.krunoff],
-                                 np.float32)
-                    self._swb01_01(self.time_step, storages, k, p, et,
-                                   rch1, runoff1, etr1)
+
+                storages = np.array([outcrop.ia, outcrop.ia*c_ia0,
+                                     outcrop.whc, outcrop.whc*c_whc0],
+                                    np.float32)
+                k = np.array([outcrop.kdirect, outcrop.kuz,
+                              outcrop.klateral, outcrop.krunoff],
+                             np.float32)
+                ier, xer = swb.swb01(self.time_step, storages, k, p, et, rch1,
+                                     runoff1, etr1)
+                if ier >= 0:
+                    raise ValueError(f'Balance error {xer:0.2f}\n'
+                                     f'Aquifer: {aquifer.name}\n'
+                                     f'Outcrop: {outcrop.fid:n}\n'
+                                     f'Date: {dates[ier]:n}')
+
                 rch += rch1 * (outcrop.area * 0.001)
                 runoff += runoff1 * (outcrop.area * 0.001)
                 etr += etr1 * (outcrop.area * 0.001)
+                self._write_metadata(fmeta, aquifer, outcrop)
 
             self._insert_output(con, cur, aquifer.fid, dates, rch, runoff, etr)
 
         self._save_metadata(con, cur)
 
         con.close()
+        fmeta.close()
 
 
-    @jit(void(float32[:], int32[:], float32[:], float32[:], float32[:],
-              float32[:]), nopython=True)
-    def _hargreaves_samani(r0, im, tmax, tmin, tavg, et):
+    @jit(void(int32[:], float32[:], float32[:]), nopython=True)
+    def _et_averaged_set(imonths, et_avg, et):
         """
-        et by hargreaves-samani
-        param
-        r0: extraterrestrial radiation mm
-        im: for a vector of observations dates, im has the month of each
-            date -1; ie, for the date 1970-08-22 -> 8 - 1 = 7
-        tmax, tmin, tavg: máx, mín, average temperature ºC
-        etp (output): et mm
+        set et arrays whith month averaged values
         """
-        for i in range(et.size):
-            et[i] = 0.0023 * (tavg[i] + 17.78) + r0[im[i]] \
-            * (tmax[i] - tmin[i])**0.5
-
-
-#    @jit(void(int32, float32[:], float32[:], float32[:],
-#              float32[:], float32[:], float32[:], float32[:]),
-#        nopython=True)
-    def _swb01_01(ntimestep, storages, k, p, et, rch, runoff, etr):
-        """
-        soil water balance in a temporal data serie
-        parameters:
-            ntimestep: number of iterations to work out water balance in
-                the soil
-            storages: array of water storages values -look at initialization-
-            k: array of k values -look at initialization-
-            p: precipitacion mm
-            et: potential evapotranspiration mm
-            rch: recharge mm -output-
-            runoff: runoff mm -output-
-            etr: real evapotranspiration mm -output-
-
-        iamax, whcmax: max values of ia and whc (data)
-        ia1, whc1: initial values of ia and whc, then change in function
-        """
-        iamax = storages[0]
-        ia1 = storages[1]
-        whcmax = storages[2]
-        whc1 = storages[3]
-        for i in range(p.size):
-            ia1, p1 = BHIMES._storage_input(iamax, ia1, p[i])  # ia
-            ia1, etr[i] = BHIMES._storage_output(ia1, et[i])
-            et1 = et[i] - etr[i]
-
-            nts = BHIMES._nstep_set(ntimestep, p, whcmax, whc1)
-            if nts > 1:
-                kdirect = k[0] / nts
-                kuz = k[1] / nts
-                klateral = k[2] / nts
-                krunoff = k[3] / nts
-                p1 = p1 / nts
-                et1 = et1 / nts
-            else:
-                kdirect = k[0]
-                kuz = k[1]
-                klateral = k[2]
-                krunoff = k[3]
-
-            for i_time_step in range(nts):
-                pi = p1
-                eti = et1
-
-                if kdirect > 0. and pi > 0.:  # direct recharge
-                    rch[i] += min(kdirect, pi)
-                    pi -= rch[i]
-
-                whc1, pi = BHIMES._storage_input(whcmax, whc1, pi)
-
-                # if soil is full of water and there is precipitation excess
-                if pi > 0. and abs(whc1-whcmax) < 0.0001:
-                    r1 = min(kuz, pi)
-                    pi -= r1
-
-                    if krunoff > 0. and pi > 0.:
-                        r2 = min(krunoff, pi)
-                        pi -= r2
-                    else:
-                        r2 = 0.
-
-                    r3 = r1 + r2
-
-                    if klateral > 0 and r3 > 0.:
-                        r4 = min(klateral, r3)
-                        r3 -= r4
-
-                    rch[i] += r3
-
-                    if pi > 0.:
-                        runoff[i] += pi
-                        pi = 0.  # pedagogical assignment
-
-                whc1, eti = BHIMES._storage_output(whc1, eti)
-                x = et1 - eti
-                etr[i] -= x
-
-
-    def _coef_initial_wstorages(self):
-        """
-        sets coefs. in function of water initial condition
-            then
-        """
-        if self.initial_condition == self._initial_conditions[0]:
-            ia0, whc0 = 0.1, 0.1
-        elif self.initial_condition == self._initial_conditions[1]:
-            ia0, whc0 = 0.5, 0.5
-        else:
-            ia0, whc0 = 0.9, 0.9
-        return ia0, whc0
-
-
-    @jit(nopython=True)
-    def _storage_input(smax, scurrent, wi):
-        """
-        water balance in a storage
-        parameters:
-            smax: max water storage
-            scurrent: current water storage (at the beginning)
-            wi: water input
-        output:
-            we: water excess
-            sfinal: storage at the end of the water balance
-        """
-        sdry = smax - scurrent
-        if wi >= sdry:
-            we = wi - sdry
-            sfinal = smax
-        else:
-            we = 0.
-            sfinal = scurrent + wi
-        return sfinal, we
-
-
-    @jit(nopython=True)
-    def _storage_output(whc0, pwr):
-        """
-        soil water release -et-
-        parameters:
-            whc0: initial water holding content
-            pwr: potential water release -max water release-
-        output:
-            shc1: final water holding content
-            wr: water release
-        """
-        if pwr >= whc0:
-            wr = whc0
-            whc1 = 0.
-        else:
-            wr = pwr
-            whc1 = whc0 - pwr
-        return whc1, wr
-
-
-    @jit(nopython=True)
-    def _nstep_set(nstep0, p, whcmax, whc0):
-        """
-        sets nstep according to p, et, whc
-        """
-        if nstep0 == 1:
-            return 1
-
-        minp = 1.
-        if p < minp:
-            return 1
-
-        sdry = whcmax - whc0
-        if p < sdry:
-            return 1
-        else:
-            for i in range(nstep0, 1, -1):
-                x = sdry / i
-                if x >= minp:
-                    return i
-        return i
-
-
-    @jit(void(float32, float32, float32, float32[:], int32[:],
-              float32[:], float32[:], float32[:], float32[:] ), nopython=True)
-    def _swb_basic(kuz, whc0, whc, et_avg, im, p, rch, runoff, etr):
-        """
-        basic soil water balance in a temporal data serie
-        parameters:
-            kuz: k unsatured zone mm
-            whc0: initial whc
-            whc: soil water holding content mm
-            et_avg: average values of et mm -12 values, Jan. to Dec.-
-            im: for a vector of observations dates,
-                im contains the month of each date -1;
-                i.e., for the date 1970-08-22 -> 8 - 1 = 7
-        p: precipitacion mm
-        rch, np array float: recharge mm -output-
-        runoff: runoff mm -output-
-        et: real evapotranspiration mm -output-
-        """
-        whc1 = whc0
-        for i in range(p.size):
-            p1 = p[i]
-            x = whc - whc1
-            if p1 > x:
-                p1 -= x
-                whc1 = whc
-            else:
-                p1 = 0
-                whc1 += p1
-            rch[i] = min(kuz, p1)
-            p1 -= rch[i]
-            if p1 > 0:
-                runoff[i] = p1
-            if et_avg[im[i]] >= whc1:
-                etr[i] = whc1
-                whc1 = 0.
-            else:
-                etr[i] = et_avg[im[i]]
-                whc1 -= et_avg[im[i]]
+        for i in range(imonths.size):
+            et[i] = et_avg[imonths[i]]
 
 
     def _create_output_table(self, con, cur):
@@ -690,27 +498,12 @@ class BHIMES():
         con.commit()
 
 
-    def _save_metadata(self, con, cur):
+    def _write_metadata_base(self, fmeta):
         """
-        con: connection to an open database
-        cur: cursor to con
+        save data from selected project
         """
         import datetime
 
-        stm1 = f'drop table if exists {self.table_output}_metadata'
-
-        stm2 =\
-        f"""
-        create table if not exists {self.table_output}_metadata(
-            description text
-        )
-        """
-
-        stm3 =\
-        f"""
-        insert into {self.table_output}_metadata (description)
-        values (?)
-        """
         et_avg = [f'{row:0.2f}' for row in self.et_avg]
         et_avg = ','.join(et_avg)
         metadata =\
@@ -728,10 +521,32 @@ class BHIMES():
          'et_avg: ' + et_avg
         )
         metadata = '\n'.join(metadata)
-        cur.execute(stm1)
-        cur.execute(stm2)
-        cur.execute(stm3, (metadata,))
-        con.commit()
+        fmeta.write(f'{metadata}\n')
+        self._write_header(fmeta)
+
+
+    def _write_header(self, fmeta):
+        """
+        writes header of metadata
+        """
+        a = ('aquifer.name', 'aquifer.y4326',
+             'outcrop.fid', 'outcrop.area',
+             'outcrop.ia', 'outcrop.whc',
+             'outcrop.kdirect', 'outcrop.kuz',
+             'outcrop.klateral', 'outcrop.krunoff')
+        fmeta.write(f'{",".join(a)}\n')
+
+
+    def _write_metadata(self, fmeta, aquifer, outcrop):
+        """
+        writes metada
+        """
+        a = (f'{aquifer.name}', '{aquifer.y4326}',
+             f'{outcrop.fid:n}', f'{outcrop.area:0.1%f}',
+             f'{outcrop.ia:0.2%f}', f'{outcrop.whc:0.2%f}',
+             f'{outcrop.kdirect:0.2%f}', f'{outcrop.kuz:0.2%f}',
+             f'{outcrop.klateral:0.2%f}', f'{outcrop.krunoff:0.2%f}')
+        fmeta.write(f'{",".join(a)}\n')
 
 
     def save_annual_graphs(self):
@@ -871,6 +686,10 @@ class BHIMES():
         order by strftime('%Y', date)
         """
 
+        if self.proc != 'hargreaves':
+            print('et annual graphs are only saved when proc is Hargreaves')
+            return
+
         cont = sqlite3.connect('memory')
         curt = cont.cursor()
         curt.execute(create_table)
@@ -897,9 +716,9 @@ class BHIMES():
             tmax = rows[:, 2].astype(np.float32)
             tavg = rows[:, 3].astype(np.float32)
 
-            # eth
+            # et
             et = np.empty((tmin.size), np.float32)
-            BHIMES._hargreaves_samani(r0, im, tmax, tmin, tavg, et)
+            swb.hargreaves_samani(r0, im, tmax, tmin, tavg, et)
 
             # xy
             curt.execute(delete_table)
@@ -1077,5 +896,5 @@ class Outcrop():
 
 
     @property
-    def runoff(self):
+    def krunoff(self):
         return self.data[7]
