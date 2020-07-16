@@ -11,9 +11,7 @@ from numba import jit, void, float32, int32
 import numpy as np
 
 
-@jit(void(int32, float32[:], float32[:], float32[:],
-          float32[:], float32[:], float32[:], float32[:]),
-    nopython=True)
+@jit(nopython=True)
 def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
     """
     soil water balance in a temporal data serie
@@ -36,10 +34,9 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
     whcmax = storages[2]
     whc1 = storages[3]
     for i in range(p.size):
-        total_storage0 = ia1 + whc1
         ia1, p1 = _storage_input(iamax, ia1, p[i])  # ia
-        ia1, etr_ia = _storage_output(iamax, ia1, et[i])
-        et1 = et[i] - etr_ia
+        ia1, etr[i] = _storage_output(iamax, ia1, et[i])
+        et1 = et[i] - etr[i]
 
         nts = _nstep_set(ntimestep, p1, whcmax, whc1)
         if nts > 1:
@@ -56,66 +53,58 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
             krunoff = k[3]
 
         for i_time_step in range(nts):
+            whc_initial = whc1
             pi = p1
             eti = et1
 
             if kdirect > 0. and pi > 0.:  # direct recharge
-                r1 = min(kdirect, pi)
-                rch[i] += r1
-                pi -= r1
+                rd = min(kdirect, pi)
+                rch[i] += rd
+                pi -= rd
+            else:
+                rd = 0.
 
             whc1, pi = _storage_input(whcmax, whc1, pi)
 
             # if soil is full of water and there is precipitation excess
             if pi > 0. and abs(whc1-whcmax) < 0.0001:
-                r1 = min(kuz, pi)
-                pi -= r1
+                ruz = min(kuz, pi)
+                pi -= ruz
 
                 if krunoff > 0. and pi > 0.:
-                    r2 = min(krunoff, pi)
-                    pi -= r2
+                    rr = min(krunoff, pi)
+                    pi -= rr
                 else:
-                    r2 = 0.
+                    rr = 0.
 
-                r3 = r1 + r2
+                rt = ruz + rr
 
-                if klateral > 0 and r3 > 0.:
-                    r4 = min(klateral, r3)
-                    r3 -= r4
+                if klateral > 0 and rt > 0.:
+                    rl = min(klateral, rt)
+                    rt -= rl
+                else:
+                    rl = 0.
 
-                rch[i] += r3
+                rch[i] += rt
 
                 if pi > 0.:
-                    r5 = pi
+                    rnf = pi
                     runoff[i] += pi
                     pi = 0.  # pedagogical assignment
+                else:
+                    rnf = 0.
             else:
-                r3 = r4 = r5 = 0.
+                rt = rl = rnf = 0.
 
             whc1, etr_soil = _storage_output(whcmax, whc1, eti)
-            etr[i] += etr_ia + etr_soil
-            balan = p[i] - etr_ia - r3 - r4 - r5 - etr_soil +\
-            total_storage0 - ia1 - whc1
+            etr[i] += etr_soil
+            balan = p1 - rd - rt - rl - rnf - etr_soil + whc_initial - whc1
             if abs(balan) > 0.001:
                 return i, balan
-    return -1, 0.0
+    return -1, balan
 
 
-def _coef_initial_wstorages(self):
-    """
-    sets coefs. in function of water initial condition
-        then
-    """
-    if self.initial_condition == self._initial_conditions[0]:
-        ia0, whc0 = 0.1, 0.1
-    elif self.initial_condition == self._initial_conditions[1]:
-        ia0, whc0 = 0.5, 0.5
-    else:
-        ia0, whc0 = 0.9, 0.9
-    return ia0, whc0
-
-
-@jit(float32[:](float32, float32, float32), nopython=True)
+@jit(nopython=True)
 def _storage_input(smax, scurrent, wi):
     """
     water balance in a storage
@@ -159,7 +148,7 @@ def _storage_output(whcmax, whc0, pwr):
     return whc1, wr
 
 
-@jit(int32(int32, float32, float32, float32), nopython=True)
+@jit(nopython=True)
 def _nstep_set(nstep0, p, whcmax, whc0):
     """
     sets nstep according to p, et, whc
@@ -182,21 +171,21 @@ def _nstep_set(nstep0, p, whcmax, whc0):
     return i
 
 
-    @jit(void(float32[:], int32[:], float32[:], float32[:], float32[:],
-              float32[:]), nopython=True)
-    def hargreaves_samani(r0, im, tmax, tmin, tavg, et):
-        """
-        et by hargreaves-samani
-        param
-        r0: extraterrestrial radiation mm
-        im: for a vector of daily observation dates, im has the month of each
-            date -1; ie, for the date 1970-08-22 -> 8 - 1 = 7
-        tmax, tmin, tavg: máx, mín, average temperature ºC
-        etp (output): et mm
-        """
-        for i in range(et.size):
-            et[i] = 0.0023 * (tavg[i] + 17.78) + r0[im[i]] \
-            * (tmax[i] - tmin[i])**0.5
+@jit(void(float32[:], int32[:], float32[:], float32[:], float32[:],
+          float32[:]), nopython=True)
+def hargreaves_samani(r0, im, tmax, tmin, tavg, et):
+    """
+    et by hargreaves-samani
+    param
+    r0: extraterrestrial radiation mm
+    im: for a vector of daily observation dates, im has the month of each
+        date -1; ie, for the date 1970-08-22 -> 8 - 1 = 7
+    tmax, tmin, tavg: máx, mín, average temperature ºC
+    etp (output): et mm
+    """
+    for i in range(et.size):
+        et[i] = 0.0023 * (tavg[i] + 17.78) + r0[im[i]] \
+        * (tmax[i] - tmin[i])**0.5
 
 
 class Parameter__sensivity():
@@ -318,7 +307,8 @@ class Parameter__sensivity():
                                  etr)
                 if ier >= 0:
                     raise ValueError(f'Balance error in iter {ier:n}',
-                                     f'balan error {xer:0.2f}')
+                                     f'Balance error {xer:0.2f}'
+                                     f'{i:n} call loop')
 
                 if output_type != 'csv':
                     cur.execute(insert, (n, ntimestep,

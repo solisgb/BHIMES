@@ -415,10 +415,11 @@ class BHIMES():
                 ier, xer = swb.swb01(self.time_step, storages, k, p, et, rch1,
                                      runoff1, etr1)
                 if ier >= 0:
-                    raise ValueError(f'Balance error {xer:0.2f}\n'
-                                     f'Aquifer: {aquifer.name}\n'
-                                     f'Outcrop: {outcrop.fid:n}\n'
-                                     f'Date: {dates[ier]:n}')
+                    a = (f'Balance error {xer}',  f'Aquifer: {aquifer.name}',
+                         f'Outcrop: {outcrop.fid}',
+                         f'Date: {dates[ier]} (i {ier})')
+                    a = '\n'.join(a)
+                    raise ValueError(a)
 
                 rch += rch1 * (outcrop.area * 0.001)
                 runoff += runoff1 * (outcrop.area * 0.001)
@@ -426,8 +427,6 @@ class BHIMES():
                 self._write_metadata(fmeta, aquifer, outcrop)
 
             self._insert_output(con, cur, aquifer.fid, dates, rch, runoff, etr)
-
-        self._save_metadata(con, cur)
 
         con.close()
         fmeta.close()
@@ -440,6 +439,20 @@ class BHIMES():
         """
         for i in range(imonths.size):
             et[i] = et_avg[imonths[i]]
+
+
+    def _coef_initial_wstorages(self):
+        """
+        sets coefs. in function of water initial condition
+            then
+        """
+        if self.initial_condition == self._initial_conditions[0]:
+            ia0, whc0 = 0.1, 0.1
+        elif self.initial_condition == self._initial_conditions[1]:
+            ia0, whc0 = 0.5, 0.5
+        else:
+            ia0, whc0 = 0.9, 0.9
+        return ia0, whc0
 
 
     def _create_output_table(self, con, cur):
@@ -504,8 +517,6 @@ class BHIMES():
         """
         import datetime
 
-        et_avg = [f'{row:0.2f}' for row in self.et_avg]
-        et_avg = ','.join(et_avg)
         metadata =\
         (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
          self.description,
@@ -517,10 +528,13 @@ class BHIMES():
          'outcrops select: ' + self.select_outcrops.text,
          'met select: ' + self.select_met.text,
          'initial_condition: ' + self.initial_condition,
-          f'time_step max: {self.time_step}',
-         'et_avg: ' + et_avg
+          f'time_step max: {self.time_step}'
         )
         metadata = '\n'.join(metadata)
+        if self.proc == 'basic':
+            et_avg = [f'{row:0.2f}' for row in self.et_avg]
+            et_avg = ','.join(et_avg)
+            metadata = metadata + f'\n{et_avg}'
         fmeta.write(f'{metadata}\n')
         self._write_header(fmeta)
 
@@ -542,10 +556,10 @@ class BHIMES():
         writes metada
         """
         a = (f'{aquifer.name}', '{aquifer.y4326}',
-             f'{outcrop.fid:n}', f'{outcrop.area:0.1%f}',
-             f'{outcrop.ia:0.2%f}', f'{outcrop.whc:0.2%f}',
-             f'{outcrop.kdirect:0.2%f}', f'{outcrop.kuz:0.2%f}',
-             f'{outcrop.klateral:0.2%f}', f'{outcrop.krunoff:0.2%f}')
+             f'{outcrop.fid:n}', f'{outcrop.area:0.1f}',
+             f'{outcrop.ia:0.2f}', f'{outcrop.whc:0.2f}',
+             f'{outcrop.kdirect:0.2f}', f'{outcrop.kuz:0.2f}',
+             f'{outcrop.klateral:0.2f}', f'{outcrop.krunoff:0.2f}')
         fmeta.write(f'{",".join(a)}\n')
 
 
