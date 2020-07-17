@@ -25,7 +25,18 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
         rch: recharge mm -output-
         runoff: runoff mm -output-
         etr: real evapotranspiration mm -output-
+    returns
+        2 values, depending on water balance in each i loop
+        integer: if a balance problem occurs it returns the i value in the loop
+            in witch water balance fails; else returns -1 at the end of the
+            function
+        float: water balance
+        the function can be runned with jit activated; at the moment numba
+            doesn't suport to raise excepcions, so I need to return the
+            pair integer, float to signal an error in the balance
 
+    ia: initial abstraction
+    whc: water holding content
     iamax, whcmax: max values of ia and whc (data)
     ia1, whc1: initial values of ia and whc, then change in function
     """
@@ -190,9 +201,9 @@ def hargreaves_samani(r0, im, tmax, tmin, tavg, et):
 
 class Parameter__sensivity():
     """
-    run soil water balance function in a given range of parameter values
-    the results are stored in an csv or sqlite file with the function name
-    parameters tested: whc kuz
+    runs soil water balance function in a given range of parameter values
+    the results are stored in an csv or sqlite file with the function name;
+    parameters implemented: whc and kuz
     """
 
 
@@ -226,10 +237,10 @@ class Parameter__sensivity():
     def swb01_parameter_sensivity(self,ntimestep, storages, k, p, et,
                                   rch, runoff, etr, output_type='csv'):
         """
-        calls to swb01 sensitivity using a range of predefined values of
+        calls to swb01 function using a range of predefined values of
             whc and kuz arameters
-        to add more parameters to evaluate in a range, it's need to modify
-            the function
+        to modify the parameters or add more, it's need necessary
+            to modify the function
         """
 
         if output_type not in ('csv', 'sqlite'):

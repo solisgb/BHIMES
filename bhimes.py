@@ -112,7 +112,7 @@ class BHIMES():
 
     def _create_db(self):
         """
-        create a sqlite db
+        creates a sqlite db
         """
 
         stm1 = \
@@ -435,7 +435,7 @@ class BHIMES():
     @jit(void(int32[:], float32[:], float32[:]), nopython=True)
     def _et_averaged_set(imonths, et_avg, et):
         """
-        set et arrays whith month averaged values
+        sets et arrays whith month averaged values
         """
         for i in range(imonths.size):
             et[i] = et_avg[imonths[i]]
@@ -457,7 +457,7 @@ class BHIMES():
 
     def _create_output_table(self, con, cur):
         """
-        create the output table
+        creates the output table
         parameters
         con: connection -already open-
         cur: cursor to conn -already open-
@@ -513,7 +513,7 @@ class BHIMES():
 
     def _write_metadata_base(self, fmeta):
         """
-        save data from selected project
+        saves data from selected project
         """
         import datetime
 
@@ -833,7 +833,7 @@ class Aquifer():
 
     def __init__(self, data: list):
         """
-        fid integer: identificador
+        fid integer: identifier
         name text: aquifer name
         y4326 real: latitude epgs 4326
         """
