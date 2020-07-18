@@ -1,5 +1,5 @@
-# BHIMES
-Soil water balance
+# basic-swb
+Basic soil water balance
 
 The module where the swb is done is swb.py
 
