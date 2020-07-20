@@ -29,7 +29,7 @@ outcrop data and parameters
     klateral real, lateral permeability from whc mm/d
     krunoff real, superficial runoff infiltration mm/d
 
-meteorologycal data related with aquifer -in this version-
+meteorological data related with aquifer -in this version-
     fid integer
     date text(10)
     p real, precipitation in date mm
@@ -53,6 +53,7 @@ class BHIMES():
     """
     _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order!
     _et_procedures = ('basic', 'hargreaves')
+    _select_r0 = 'select r0 from allen.r0 where lat = ? order by "month"'
 
 
     def __init__(self, project: str, et_proc: str = 'basic',
@@ -108,6 +109,23 @@ class BHIMES():
                      np.float32)
         self.table_output = prj.find('table_output').text.strip()
         self.xy_annual_dir = prj.find('xy_annual_dir').text.strip()
+        sensitivity = prj.find('sensitivity')
+        if sensitivity:
+            self.par = {'whc': (float(sensitivity.find('whc').get('delta')),
+                                float(sensitivity.find('whc').get('neval'))
+                               ),
+                        'kuz': (float(sensitivity.find('kuz').get('delta')),
+                                float(sensitivity.find('kuz').get('neval'))
+                               )
+                       }
+
+
+    def delta(self, par_name: str):
+        return self.param[par_name][0]
+
+
+    def neval(self, par_name: str):
+        return self.param[par_name][1]
 
 
     def _create_db(self):
@@ -357,14 +375,6 @@ class BHIMES():
 
         metadata_file = 'swb01_metadata.csv'
 
-        select_r0 = \
-        """
-        select r0
-        from allen.r0
-        where lat = ?
-        order by "month"
-        """
-
         con = sqlite3.connect(self.db)
         cur = con.cursor()
         cur.execute("PRAGMA auto_vacuum = FULL")
@@ -389,7 +399,7 @@ class BHIMES():
             et = np.empty((p.size), np.float32)
             if self.proc == 'hargreaves':
                 # solar radiation
-                cur.execute(select_r0, (int(aquifer.y4326),))
+                cur.execute(BHIMES._select_r0, (int(aquifer.y4326),))
                 sr = np.array([row[0] for row in cur.fetchall()], np.float32)
                 tmin = met[:, 2].astype(np.float32)
                 tmax = met[:, 3].astype(np.float32)
@@ -676,14 +686,6 @@ class BHIMES():
         insert_data = 'insert into et (date, et) values (?, ?)'
         drop_table = 'drop table if exists et'
 
-        select_r0 = \
-        """
-        select r0
-        from allen.r0
-        where lat = ?
-        order by "month"
-        """
-
         stm1 = \
         f"""
         select  m.date, m.tmin, m.tmax, m.tavg
@@ -718,7 +720,7 @@ class BHIMES():
             print(f'{aquifer.name} xy eth')
 
             # solar radiation -Allen-
-            cur.execute(select_r0, (int(aquifer.y4326),))
+            cur.execute(BHIMES.select_r0, (int(aquifer.y4326),))
             r0 = np.array([row[0] for row in cur.fetchall()], np.float32)
 
             # t diarias
@@ -823,6 +825,183 @@ class BHIMES():
         plt.close('all')
         plt.rcdefaults()
 
+
+    def swb01_sensitivity(self):
+        """
+        swb01 using kuz and whc in a defined set of ranges
+        I test recharge, ret and runoff using whc and kuz in a range of
+            values defined in self.params
+        As an aquifer can have several outcrops, I average the outcrops
+            parameter by area; this way,  I just make a call to the function
+            swb01 for each aquifer
+        """
+        from os.path import dirname, join
+
+        metadata_file = 'swb01_sensitivity_metadata.csv'
+
+        con = sqlite3.connect(self.db)
+        cur = con.cursor()
+        cur.execute("PRAGMA auto_vacuum = FULL")
+        cur.execute('attach database ? as allen', ('r0.db',))
+        self._create_output_table(con, cur)
+
+        cur.execute(self.select_aquifers.text)
+        aquifers = [Aquifer(row) for row in cur.fetchall()]
+        fmeta = open(join(dirname(self.db), metadata_file), 'w')
+        self._write_metadata_base(fmeta)
+
+        for aquifer in aquifers:
+            print(f'{aquifer.name}')
+
+            fo = open(join(self.dir_out,
+                           f'aq_sensivity_{aquifer.fid}.csv'), 'w')
+            fo.write('fid,ntimestep,iamax,ia0,whcmax,whc0,kdirect,kuz,'
+                     'klateral,krunoff,ndata,psum,npgt0,etsum,rchsum,'
+                     'runoffsum,etrsum\n')
+
+            cur.execute(self.select_outcrops.text, (aquifer.fid,) )
+            outcrops = [Outcrop(row) for row in cur.fetchall()]
+            cur.execute(self.select_met.text, (aquifer.fid,) )
+            met = np.array([row for row in cur.fetchall()])
+            dates = met[:, 0]
+            imonths = np.array([int(row[5:7])-1 for row in dates], np.int32)
+            p = met[:,1].astype(np.float32)
+            et = np.empty((p.size), np.float32)
+            if self.proc == 'hargreaves':
+                # solar radiation
+                cur.execute(BHIMES.select_r0, (int(aquifer.y4326),))
+                sr = np.array([row[0] for row in cur.fetchall()], np.float32)
+                tmin = met[:, 2].astype(np.float32)
+                tmax = met[:, 3].astype(np.float32)
+                tavg = met[:, 4].astype(np.float32)
+                swb.hargreaves_samani(sr, imonths, tmax, tmin, tavg, et)
+            else:
+                BHIMES._et_averaged_set(imonths, self.et_avg, et)
+            rch = np.zeros((p.size), np.float32)
+            runoff = np.zeros((p.size), np.float32)
+            etr =  np.zeros((p.size), np.float32)
+
+            coefs = BHIMES._coef_area_get(outcrops)
+            pars = {'ia': 0., 'whc': 0., 'kdirect': 0., 'kuz': 0.,
+                          'klateral': 0., 'krunoff': 0.}
+            for k in pars:
+                pars[k] = BHIMES._averaged_parameter(k, coefs, outcrops)
+
+            c_ia0, c_whc0 = self._coef_initial_wstorages()
+
+            storages = np.array([pars['ia'], pars['ia']*c_ia0,
+                                 pars['whc'], pars['whc']*c_whc0], np.float32)
+            k = np.array([pars['kdirect'], pars['kuz'],
+                          pars['klateral'], pars['krunoff]']], np.float32)
+
+            ndata = p.size
+            psum = p.sum()
+            npgt0 = np.count_nonzero(p > 0.)
+            etsum = np.sum(et)
+            n = 0
+            toxy = []
+            for i in range(self.neval('kuz')):
+                xk = np.copy(k)
+                xk[1] = pars['kuz'] + (pars['kuz'] * self.delta('kuz') * i)
+                for j in range(self.n('whc')):
+                    n += 1
+                    print(f'{n:n}')
+                    xstorages = np.copy(storages)
+                    xstorages[2] = pars['kuz'] + (pars['kuz'] * \
+                                                  self.delta('kuz') * j)
+
+                    ier, xer = swb.swb01(self.time_step, xstorages, xk, p, et,
+                                         rch, runoff, etr)
+
+                    if ier >= 0:
+                        a = (f'Balance error {xer}',
+                             f'Aquifer: {aquifer.name}',
+                             f'Date: {dates[ier]} (i {ier})')
+                        a = '\n'.join(a)
+                        raise ValueError(a)
+
+                    toxy.append([xstorages[2], xk[1], rch.sum(),
+                                 runoff.sum(), etr.sum()])
+                    fo.write(f'{n:n},{self.time_step:n},{xstorages[0]:0.2f},'
+                             f'{xstorages[1]:0.2f},{xstorages[2]:0.2f},'
+                             f'{xstorages[3]:0.2f},{xk[0]:0.2f},{xk[1]:0.2f},'
+                             f'{xk[2]:0.2f},{xk[3]:0.2f},'
+                             f'{ndata:n},{psum:0.2f},{npgt0:n},{etsum:0.2f},'
+                             f'{rch.sum():0.2f},{runoff.sum():0.2f},'
+                             f'{etr.sum():0.2f}\n')
+
+                    np.savetxt(join(self.dir_out,
+                                    f'aq_{aquifer.fid}_{n:n}.csv'),
+                               np.transpose([rch, runoff, etr]),
+                               delimiter=',', fmt='%0.2f',
+                               header='recarge,runoff,etr')
+            fo.close()
+            toxy = np.array(toxy, np.float32)
+            for i, item in enumerate(('recharge', 'runoff', 'etr')):
+                BHIMES._contour(f'{self.description}: {item}',
+                                toxy[:, 0], toxy[:, 1],
+                                toxy[:, i+2], 'whc', 'kuz',
+                                join(self.dir_out,
+                                     f'aq_{aquifer.fid}_sensitivity'))
+
+        con.close()
+
+
+    @staticmethod
+    def _coef_area_get(outcrops):
+        """
+        coefficients by area
+        """
+        x = np.array([outcrop.area for outcrop in outcrops], np.float32)
+        y = x[:] / x.sum()
+        return y
+
+
+    @staticmethod
+    def _averaged_parameter(param, coefs, outcrops):
+        """
+        averaged parameter by area
+        """
+        if param == 'ia':
+            x = np.array([outcrop.ia * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+        elif param == 'whc':
+            x = np.array([outcrop.whc * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+        elif param == 'kdirect':
+            x = np.array([outcrop.kdirect * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+        elif param == 'kuz':
+            x = np.array([outcrop.kuz * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+        elif param == 'klateral':
+            x = np.array([outcrop.klateral * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+        elif param == 'krunoff':
+            x = np.array([outcrop.krunoff * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+        else:
+            raise ValueError(f'{param} no es un parámetro válido')
+        return x.sum()
+
+
+    @staticmethod
+    def _contour(title, x, y, z, xlabel, ylabel, dst, scale: float=1.0):
+        """
+        3D representarion of the results
+        """
+        import matplotlib.pyplot as plt
+
+        fig, ax1 = plt.subplots()
+
+        ax1.tricontour(x*scale, y*scale, z*scale, levels=14, linewidths=0.5,
+                       colors='k')
+        cntr1 = ax1.tricontourf(x, y, z, levels=14, cmap="RdBu_r")
+
+        fig.colorbar(cntr1, ax=ax1)
+        ax1.plot(x, y, 'ko', ms=3)
+        ax1.set_title(title)
+        ax1.set_xlabel(xlabel)
+        ax1.set_ylabel(ylabel)
+
+        plt.subplots_adjust(hspace=0.5)
+        plt.show()
+        fig.savefig(dst)
+        plt.close('all')
 
 
 class Aquifer():
