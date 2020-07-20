@@ -3,8 +3,8 @@ Basic soil water balance
 
 The module where the swb is done is swb.py
 
-main and swb_test modules are independent and each one calls swb module
+bhimes and swb_test modules are modules where calls to swb module are made
 
-main calls functions in bhimes, where calls to swb are done
+xbhimes calls functions in bhimes, where calls to swb are made
 
 swb_test calls swb directly
