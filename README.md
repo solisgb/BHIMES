@@ -1,7 +1,7 @@
 # basic-swb
 Basic soil water balance
 
-The module where the swb is done is swb.py (library)
+The module where the swb is made is swb.py (library)
 
 callable modules: xbhimes, xbhimes_sensitivity and swb_test modules
 
