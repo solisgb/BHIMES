@@ -13,4 +13,4 @@ swb_test calls swb directly
 
 more explanations can be found in _leeme.docx -in Spanish-
 
-comments in code are in English
+comments in the code files and in bhimes.xml file are in English
