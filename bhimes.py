@@ -828,34 +828,30 @@ class BHIMES():
 
     def swb01_sensitivity(self):
         """
-        swb01 using kuz and whc in a defined set of ranges
+        swb01 using kuz and whc in a defined set of values ranges
         I test recharge, ret and runoff using whc and kuz in a range of
             values defined in self.params
         As an aquifer can have several outcrops, I average the outcrops
-            parameter by area; this way,  I just make a call to the function
+            parameter by area; this way, I just make a call to the function
             swb01 for each aquifer
+        The outputs area saved in text files
         """
-        from os.path import dirname, join
-
-        metadata_file = 'swb01_sensitivity_metadata.csv'
+        from os.path import join
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
         cur.execute("PRAGMA auto_vacuum = FULL")
         cur.execute('attach database ? as allen', ('r0.db',))
-        self._create_output_table(con, cur)
 
         cur.execute(self.select_aquifers.text)
         aquifers = [Aquifer(row) for row in cur.fetchall()]
-        fmeta = open(join(dirname(self.db), metadata_file), 'w')
-        self._write_metadata_base(fmeta)
 
         for aquifer in aquifers:
             print(f'{aquifer.name}')
 
             fo = open(join(self.dir_out,
-                           f'aq_sensivity_{aquifer.fid}.csv'), 'w')
-            fo.write('fid,ntimestep,iamax,ia0,whcmax,whc0,kdirect,kuz,'
+                           f'aq_{aquifer.fid}_mm_iters.csv'), 'w')
+            fo.write('iter,ntimestep,iamax,ia0,whcmax,whc0,kdirect,kuz,'
                      'klateral,krunoff,ndata,psum,npgt0,etsum,rchsum,'
                      'runoffsum,etrsum\n')
 
@@ -877,15 +873,17 @@ class BHIMES():
                 swb.hargreaves_samani(sr, imonths, tmax, tmin, tavg, et)
             else:
                 BHIMES._et_averaged_set(imonths, self.et_avg, et)
-            rch = np.zeros((p.size), np.float32)
-            runoff = np.zeros((p.size), np.float32)
-            etr =  np.zeros((p.size), np.float32)
+            rch = np.empty((p.size), np.float32)
+            runoff = np.empty((p.size), np.float32)
+            etr =  np.empty((p.size), np.float32)
 
-            coefs = BHIMES._coef_area_get(outcrops)
+            sum_outcrops_area = Outcrop.sum_area(outcrops)
+            coefs = np.array([outcrop.area for outcrop in outcrops],
+                             np.float32) / sum_outcrops_area
             pars = {'ia': 0., 'whc': 0., 'kdirect': 0., 'kuz': 0.,
                           'klateral': 0., 'krunoff': 0.}
-            for k in pars:
-                pars[k] = BHIMES._averaged_parameter(k, coefs, outcrops)
+            for key in pars:
+                pars[key] = BHIMES._averaged_parameter(key, coefs, outcrops)
 
             c_ia0, c_whc0 = self._coef_initial_wstorages()
 
@@ -899,7 +897,8 @@ class BHIMES():
             npgt0 = np.count_nonzero(p > 0.)
             etsum = np.sum(et)
             n = 0
-            toxy = []
+            contour = np.empty((self.neval('kuz') * self.neval('whc'), 5),
+                               np.float32)
             for i in range(self.neval('kuz')):
                 xk = np.copy(k)
                 xk[1] = pars['kuz'] + (pars['kuz'] * self.delta('kuz') * i)
@@ -907,8 +906,8 @@ class BHIMES():
                     n += 1
                     print(f'{n:n}')
                     xstorages = np.copy(storages)
-                    xstorages[2] = pars['kuz'] + (pars['kuz'] * \
-                                                  self.delta('kuz') * j)
+                    xstorages[2] = pars['whc'] + (pars['whc'] * \
+                                                  self.delta('whc') * j)
 
                     ier, xer = swb.swb01(self.time_step, xstorages, xk, p, et,
                                          rch, runoff, etr)
@@ -920,8 +919,8 @@ class BHIMES():
                         a = '\n'.join(a)
                         raise ValueError(a)
 
-                    toxy.append([xstorages[2], xk[1], rch.sum(),
-                                 runoff.sum(), etr.sum()])
+                    contour[n-1][:] = [xstorages[2], xk[1], rch.sum(),
+                                 runoff.sum(), etr.sum()]
                     fo.write(f'{n:n},{self.time_step:n},{xstorages[0]:0.2f},'
                              f'{xstorages[1]:0.2f},{xstorages[2]:0.2f},'
                              f'{xstorages[3]:0.2f},{xk[0]:0.2f},{xk[1]:0.2f},'
@@ -931,16 +930,16 @@ class BHIMES():
                              f'{etr.sum():0.2f}\n')
 
                     np.savetxt(join(self.dir_out,
-                                    f'aq_{aquifer.fid}_{n:n}.csv'),
+                                    f'aq_{aquifer.fid}_mm_iter_{n:n}.csv'),
                                np.transpose([rch, runoff, etr]),
-                               delimiter=',', fmt='%0.2f',
+                               delimiter=',', fmt='%0.1f',
                                header='recarge,runoff,etr')
             fo.close()
-            toxy = np.array(toxy, np.float32)
+            contour = contour * (sum_outcrops_area * 0.001)
             for i, item in enumerate(('recharge', 'runoff', 'etr')):
                 BHIMES._contour(f'{self.description}: {item}',
-                                toxy[:, 0], toxy[:, 1],
-                                toxy[:, i+2], 'whc', 'kuz',
+                                contour[:, 0], contour[:, 1],
+                                contour[:, i+2], 'whc', 'kuz',
                                 join(self.dir_out,
                                      f'aq_{aquifer.fid}_sensitivity'))
 
@@ -1091,3 +1090,10 @@ class Outcrop():
     @property
     def krunoff(self):
         return self.data[7]
+
+
+    @staticmethod
+    def sum_area(outcrops: list):
+        return np.array([outcrop.area for outcrop in outcrops],
+                        np.float32).sum()
+

@@ -16,11 +16,12 @@ select_met: select to met(eorological) table; you can change the limits of the d
 initial_conditions str: a value in (dry, normal, wet)
 time_step int: max iter number; between 1 and 12
 et_avg 12 float values separated by commas: average daily evapotranspiration from Jan. to Dec.
-table_output: nombre de la tabla de resultados
-sensitivity: parameters related with sensivity analysis; this element is optional
-	whc: delta, and num of evaluations of whc; delta = outcrop.whc * delta ; i = 1, neval
-	kuz: delta, and num of evaluations of kuz; delta = outcrop.whc * delta ; i = 1, neval
- -->
+table_output: table name where the aoutputs will be saved
+sensitivity: parameters related with sensivity analysis; this element is optional. The element has 2 subelements: whc (soil water holding content) and kuz (unsatured zone permeability); each has two attributes, delta and neval
+	neval is de num of parameter evaluations beginning at the value in the outcrop 
+	delta is the increment of parameter value in each evaluation.
+	For instance, whc = [outcrop.whc + (outcrop.whc * delta * i) for i in neval] 
+-->
 <bhimes>
 	<project name="DHS_QCC">
 		<description>Acuífero Cuaternario del Campo de Cartagena</description>

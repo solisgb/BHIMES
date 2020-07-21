@@ -1,77 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Jul 12 11:41:37 2020
+Created on Sun Jun 21 12:50:31 2020
 
 @author: solis
 
+before run, set carefully parameter values in bhimes.xml and set project &
+     et_proc in this module
 
-use
-    set your own data or keep the proposed in the test
-    in __main__ call test01, test02 or both
+to run this option you need the sensivity element in bhimes.xml
+    to be defined
 
-to know the meaning of the parameters look into swb module
+Parameter in this module
+project: project in bhimes.xml
+et_proc: et calculation procedure; implemented ('basic', 'hargreaves')
 """
-import numpy as np
-import swb
+import littleLogging as logging
 
-# ======================TEST DATA===========================
-ntimestep: int = 1
-iamax: float = 1
-ia0: float = 0.5
-whcmax: float = 5
-whc0: float = 1
-
-kdirect: float = 0.
-kuz: float = 25
-klateral: float = 0.
-krunoff: float = 0.
-
-n_array_elements: int = 10
-p = np.zeros((n_array_elements,), np.float32)
-et = np.zeros((n_array_elements,), np.float32)
-rch = np.zeros((n_array_elements,), np.float32)
-runoff = np.zeros((n_array_elements,), np.float32)
-etr = np.zeros((n_array_elements,), np.float32)
-
-p[1] = 25.
-p[2] = 40.
-p[3] = 4.
-
-et[:] = 4.
-
-storages = np.array([iamax, ia0, whcmax, whc0], np.float32)
-k = np.array([kdirect, kuz, klateral, krunoff], np.float32)
-
-
-# ======================END TEST DATA========================
-
-
-def test01():
-    swb.swb01(ntimestep, storages, k, p, et, rch, runoff, etr)
-    print(f'precipitation: {p.sum():0.2f}')
-    print(f'et: {et.sum():0.2f}')
-    print(f'recharge: {rch.sum():0.2f}')
-    print(f'runoff: {runoff.sum():0.2f}')
-    print(f'et real: {etr.sum():0.2f}')
-
-
-def test02():
-    dir_out = r'H:\tmp'
-    kuzmin = 5
-    kuzmax = 50
-    nkuz = 10
-    whcmin = 5
-    whcmax = 50
-    nwhc = 10
-#    kuzp = swb.SParameter(kuzmin, kuzmax, nkuz)
-#    whcp = swb.SParameter(whcmin, whcmax, nwhc)
-
-    ps = swb.Parameter__sensivity(dir_out,
-                                  {'kuz': (kuzmin, kuzmax, nkuz),
-                                   'whc': (whcmin, whcmax, nwhc)})
-
-    ps.swb01_parameter_sensivity(ntimestep, storages, k, p, et,
-                                 rch, runoff, etr)
+project: str = 'DHS_QCC'
+et_proc: str = 'hargreaves'
 
 
 if __name__ == "__main__":
@@ -80,18 +26,34 @@ if __name__ == "__main__":
         from datetime import datetime
         from time import time
         import traceback
+        from bhimes import BHIMES
 
         now = datetime.now()
 
         startTime = time()
 
-        test02()
+        b = BHIMES(project, et_proc)
+        # you can comment these lines after the data has been uploaded
+        # or you can set upsert atribute to 0 in bhimes.xml
+        b.aquifer_upsert_from_file()
+        b.outcrop_upsert_from_file()
+        b.met_upsert_from_file01()
+
+        # sensitivity
+        b.swb01_sensitivity()
 
         xtime = time() - startTime
         print(f'El script tardó {xtime:0.1f} s')
+
+    except ValueError:
+        msg = traceback.format_exc()
+        logging.append(f'ValueError exception\n{msg}')
+    except ImportError:
+        msg = traceback.format_exc()
+        logging.append(f'ImportError exception\n{msg}')
     except Exception:
         msg = traceback.format_exc()
-        print(f'Exception\n{msg}')
+        logging.append(f'Exception\n{msg}')
     finally:
+        logging.dump()
         print('\nFin')
-

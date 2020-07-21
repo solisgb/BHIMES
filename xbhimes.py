@@ -4,7 +4,7 @@ Created on Sun Jun 21 12:50:31 2020
 
 @author: solis
 
-to execute, set carefully parameter values in bhimes.xml and set project,
+Before running, set carefully parameter values in bhimes.xml and set project,
      et_proc & annual_graphs in this module
 
 Parameter in this module
@@ -31,15 +31,20 @@ if __name__ == "__main__":
         startTime = time()
 
         b = BHIMES(project, et_proc)
-        b.aquifer_upsert_from_file()  # controlled in xml
+
+        # you can comment these lines after the data has been uploaded
+        # or you can set upsert atributes to 0 in bhimes.xml
+        b.aquifer_upsert_from_file()
         b.outcrop_upsert_from_file()
         b.met_upsert_from_file01()
-#        b.swb01()
-#
-#        if annual_graphs:
-#            b.save_annual_graphs()  # xy recharge, runoff & ret
-#            b.save_annual_data_graphs()  # xy p, tmax, tmin, tavg
-#            b.save_annual_eth_graphs()  # xy pet (hargreaves)
+
+        # run the swb
+        b.swb01()
+
+        if annual_graphs:
+            b.save_annual_graphs()  # xy recharge, runoff & ret
+            b.save_annual_data_graphs()  # xy p, tmax, tmin, tavg
+            b.save_annual_eth_graphs()  # xy pet (hargreaves)
 
         xtime = time() - startTime
         print(f'El script tardó {xtime:0.1f} s')
