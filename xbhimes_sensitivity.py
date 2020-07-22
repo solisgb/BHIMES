@@ -4,7 +4,7 @@ Created on Sun Jun 21 12:50:31 2020
 
 @author: solis
 
-before run, set carefully parameter values in bhimes.xml and set project &
+before running, set carefully parameter values in bhimes.xml and set project &
      et_proc in this module
 
 to run this option you need the sensivity element in bhimes.xml

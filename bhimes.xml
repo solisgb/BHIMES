@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="iso-8859-1" standalone="yes"?>
 <!-- For each proyect
+project atrib name: very short project name (no spaces, better UTF-8 characters)  
 description: short project description
-db: sqlite3 db, including path 2 file -get double dir separator in windows, e.g. c:\\path2\\dbname
+dir_db: path where db proyect will be saved -get double dir separator in windows, e.g. c:\\path2. All outputs will be saved here too
+db: sqlite3 db name 
 file_aquifers: path 2 text file with aquifers data
 	upsert: if 1 peforms upsert in aquifer table; otherwise do nothing
 	nskip: number of lines to skip in the head of the file
@@ -19,16 +21,17 @@ et_avg 12 float values separated by commas: average daily evapotranspiration fro
 table_output: table name where the aoutputs will be saved
 sensitivity: parameters related with sensivity analysis; this element is optional. The element has 2 subelements: whc (soil water holding content) and kuz (unsatured zone permeability); each has two attributes, delta and neval
 	neval is de num of parameter evaluations beginning at the value in the outcrop 
-	delta is the increment of parameter value in each evaluation.
+	delta is a factor that multiplied by parameter value in outcrop and by the number of evaluation equals parameter value in each evaluation.
 	For instance, whc = [outcrop.whc + (outcrop.whc * delta * i) for i in neval] 
 -->
 <bhimes>
 	<project name="DHS_QCC">
-		<description>Acuífero Cuaternario del Campo de Cartagena</description>
-		<db>H:\\off\\phdhs2127\\recarga\cc_q\\cc.db</db>
+		<description>Cuaternario Campo de Cartagena</description>
+		<dir_db>H:\\off\\phdhs2127\\recarga\cc_q</dir_db>
+		<db>cc.db</db>
 		<file_aquifers upsert="0" nskip="1" sep=",">H:\off\phdhs2127\recarga\cc_q\aq_aflora\acuifero.txt</file_aquifers>
 		<file_outcrops upsert="0" nskip="1" sep=";">H:\off\phdhs2127\recarga\cc_q\aq_aflora\afloramientos.txt</file_outcrops>
-		<file_met upsert="0"  nskip="1" sep=";">H:\off\phdhs2127\recarga\cc_q\meteo_out\p_tmin_tmax_idw.csv</file_met>
+		<file_met upsert="1"  nskip="1" sep=";">H:\off\phdhs2127\recarga\cc_q\meteo_out\p_tmin_tmax_idw.csv</file_met>
 		<select_aquifers>
 		select a.fid, a.name, round(a.y4326,0) lat
 		from aquifer a
@@ -42,7 +45,7 @@ sensitivity: parameters related with sensivity analysis; this element is optiona
 		<select_met>
 		select m."date", m.p , m.tmin, m.tmax, m.tavg
 		from met m
-		where m."date" >= '1985-01-01' and m."date" &lt;= '2019-09-30' and m.fid=?
+		where m."date" >= '2018-10-01' and m."date" &lt;= '2019-09-30' and m.fid=?
 		order by m."date";
 		</select_met>
 		<initial_condition>normal</initial_condition>
@@ -51,13 +54,14 @@ sensitivity: parameters related with sensivity analysis; this element is optiona
 		<table_output>rch_202007</table_output>
 		<xy_annual_dir>H:\\off\\phdhs2127\\recarga\\cc_q\\xy</xy_annual_dir>
 		<sensitivity>
-			<kuz delta="0.25" neval="5" />
-			<whc delta="0.25" neval="10" />
+			<kuz delta="0.5" neval="10" />
+			<whc delta="0.5" neval="20" />
 		</sensitivity>
 	</project>
 	<project name="BDA202006">
 		<description>Acuíferos ALMUDAINA-SEGARIA, JALÓN, JESÚS POBRE, MEDIODÍA, MONTGÓ-DENIA, ORBA, PARCENT, SOLANA DE LA LLOSA Y VERGEL</description>
-		<db>H:\\off\\balan\\ch_202006.db</db>
+		<dir_db>H:\\off\\balan</dir_db>
+		<db>ch_202006.db</db>
 		<file_aquifers upsert="0" nskip="1" sep=",">H:\\off\\balan\\acuiferos.txt</file_aquifers>
 		<file_outcrops upsert="0" nskip="1" sep="\t">H:\\off\\balan\\afloramientos.txt</file_outcrops>
 		<file_met upsert="0"  nskip="1" sep=";">H:\\off\\balan\\met_centroids.txt</file_met>

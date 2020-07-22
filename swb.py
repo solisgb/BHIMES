@@ -14,7 +14,7 @@ import numpy as np
 @jit(nopython=True)
 def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
     """
-    soil water balance in a temporal data serie
+    A new soil water balance function in a temporal data serie
     parameters:
         ntimestep: number of iterations to work out water balance in
             the soil
@@ -70,7 +70,6 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
 
             if kdirect > 0. and pi > 0.:  # direct recharge
                 rd = min(kdirect, pi)
-                rch[i] += rd
                 pi -= rd
             else:
                 rd = 0.
@@ -78,38 +77,43 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
             whc1, pi = _storage_input(whcmax, whc1, pi)
 
             # if soil is full of water and there is precipitation excess
-            if pi > 0. and abs(whc1-whcmax) < 0.0001:
+            if abs(whc1-whcmax) < 0.0001:
                 ruz = min(kuz, pi)
                 pi -= ruz
-
-                if krunoff > 0. and pi > 0.:
-                    rr = min(krunoff, pi)
-                    pi -= rr
-                else:
-                    rr = 0.
-
-                rt = ruz + rr
-
-                if klateral > 0 and rt > 0.:
-                    rl = min(klateral, rt)
-                    rt -= rl
-                else:
-                    rl = 0.
-
-                rch[i] += rt
-
-                if pi > 0.:
-                    rnf = pi
-                    runoff[i] += pi
-                    pi = 0.  # pedagogical assignment
-                else:
-                    rnf = 0.
+                iruz = 1  # flag
             else:
-                rt = rl = rnf = 0.
+                ruz = 0.
+                iruz = 0
+
+            if krunoff > 0. and pi > 0.:
+                rr = min(krunoff, pi)
+                pi -= rr
+            else:
+                rr = 0.
+
+            rnf = pi  # used in the water balance
+            runoff[i] += pi
+            pi = 0.  # pedagogical assignment
 
             whc1, etr_soil = _storage_output(whcmax, whc1, eti)
             etr[i] += etr_soil
-            balan = p1 - rd - rt - rl - rnf - etr_soil + whc_initial - whc1
+
+            if iruz == 0:
+                whc1, rdr = _ugw_drainage(whcmax, whc1, kuz)
+            else:
+                rdr = 0.
+
+            rt2aq = rd + ruz + rr + rdr
+
+            if klateral > 0.:
+                rl = min(klateral, rt2aq)
+                rt2aq -= rl
+            else:
+                rl = 0.
+
+            rch[i] += rt2aq
+
+            balan = p1 - rt2aq - rl - rnf - etr_soil + whc_initial - whc1
             if abs(balan) > 0.001:
                 return i, balan
     return -1, balan
@@ -146,9 +150,12 @@ def _storage_output(whcmax, whc0, pwr):
         whc0: initial water holding content
         pwr: potential water release -max water release-
     output:
-        shc1: final water holding content
+        whc1: final water holding content
         wr: water release
     """
+    tiny = 0.00001
+    if whcmax < tiny:
+        return 0., 0.
     xwr = pwr * whc0 / whcmax
     if xwr >= whc0:
         wr = whc0
@@ -157,6 +164,29 @@ def _storage_output(whcmax, whc0, pwr):
         wr = xwr
         whc1 = whc0 - xwr
     return whc1, wr
+
+
+@jit(nopython=True)
+def _ugw_drainage(whcmax, whc0, kuz):
+    """
+    under ground water drainage
+    parameters:
+        whcmax: max water holding content
+        whc0: initial water holding content
+        kuz: permeability unsatured zone
+    output:
+        whc0: final water holding content
+        wd: water drained
+    """
+    tiny = 0.00001
+    if whcmax < tiny:
+        return 0., 0.
+    n = 24
+    for i in range(n)
+        kus = kuz * whc0 / whcmax
+        wd = min(whc0, kus)
+        whc0 = whc0 - wd
+    return whc0, wd
 
 
 @jit(nopython=True)
@@ -343,9 +373,9 @@ class Parameter__sensivity():
                 toxy.append([xstorages[2], xk[1], rch.sum(), runoff.sum(),
                              etr.sum()])
                 np.savetxt(join(self.dir_out, f'{n:n}_{tname}.csv'),
-                           np.transpose([rch, runoff, etr]),
-                           delimiter=',', fmt='%0.2f',
-                           header='recarge,runoff,etr')
+                           np.transpose([p, et, rch, runoff, etr]),
+                           delimiter=',', fmt='%0.1f',
+                           header='p,et,recarge,runoff,etr')
 
         if output_type != 'csv':
             con.commit()
@@ -382,3 +412,108 @@ def _contour(title, x, y, z, xlabel, ylabel, dst, scale: float=1.0):
     plt.show()
     fig.savefig(dst)
     plt.close('all')
+
+
+#@jit(nopython=True)
+def swb01_001(ntimestep, storages, k, p, et, rch, runoff, etr):
+    """
+    Look at swb01, I think it's better
+    soil water balance in a temporal data serie
+    parameters:
+        ntimestep: number of iterations to work out water balance in
+            the soil
+        storages: array of water storages values -look at initialization-
+        k: array of k values -look at initialization-
+        p: precipitacion mm
+        et: potential evapotranspiration mm
+        rch: recharge mm -output-
+        runoff: runoff mm -output-
+        etr: real evapotranspiration mm -output-
+    returns
+        2 values, depending on water balance in each i loop
+        integer: if a balance problem occurs it returns the i value in the loop
+            in witch water balance fails; else returns -1 at the end of the
+            function
+        float: water balance
+        the function can be runned with jit activated; at the moment numba
+            doesn't suport to raise excepcions, so I need to return the
+            pair integer, float to signal an error in the balance
+
+    ia: initial abstraction
+    whc: water holding content
+    iamax, whcmax: max values of ia and whc (data)
+    ia1, whc1: initial values of ia and whc, then change in function
+    """
+    iamax = storages[0]
+    ia1 = storages[1]
+    whcmax = storages[2]
+    whc1 = storages[3]
+    for i in range(p.size):
+        ia1, p1 = _storage_input(iamax, ia1, p[i])  # ia
+        ia1, etr[i] = _storage_output(iamax, ia1, et[i])
+        et1 = et[i] - etr[i]
+
+        nts = _nstep_set(ntimestep, p1, whcmax, whc1)
+        if nts > 1:
+            kdirect = k[0] / nts
+            kuz = k[1] / nts
+            klateral = k[2] / nts
+            krunoff = k[3] / nts
+            p1 = p1 / nts
+            et1 = et1 / nts
+        else:
+            kdirect = k[0]
+            kuz = k[1]
+            klateral = k[2]
+            krunoff = k[3]
+
+        for i_time_step in range(nts):
+            whc_initial = whc1
+            pi = p1
+            eti = et1
+
+            if kdirect > 0. and pi > 0.:  # direct recharge
+                rd = min(kdirect, pi)
+                rch[i] += rd
+                pi -= rd
+            else:
+                rd = 0.
+
+            whc1, pi = _storage_input(whcmax, whc1, pi)
+
+            # if soil is full of water and there is precipitation excess
+            if pi > 0. and abs(whc1-whcmax) < 0.0001:
+                ruz = min(kuz, pi)
+                pi -= ruz
+
+                if krunoff > 0. and pi > 0.:
+                    rr = min(krunoff, pi)
+                    pi -= rr
+                else:
+                    rr = 0.
+
+                rt = ruz + rr
+
+                if klateral > 0 and rt > 0.:
+                    rl = min(klateral, rt)
+                    rt -= rl
+                else:
+                    rl = 0.
+
+                rch[i] += rt
+
+                if pi > 0.:
+                    rnf = pi
+                    runoff[i] += pi
+                    pi = 0.  # pedagogical assignment
+                else:
+                    rnf = 0.
+            else:
+                rt = rl = rnf = 0.
+
+            whc1, etr_soil = _storage_output(whcmax, whc1, eti)
+            etr[i] += etr_soil
+            balan = p1 - rd - rt - rl - rnf - etr_soil + whc_initial - whc1
+            if abs(balan) > 0.001:
+                return i, balan
+    return -1, balan

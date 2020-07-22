@@ -72,6 +72,7 @@ class BHIMES():
 
 
     def _read_params(self, xml_org: str, project: str):
+        from os.path import join
         import xml.etree.ElementTree as ET
 
         MAX_TIME_STEP = 24
@@ -85,8 +86,10 @@ class BHIMES():
         if not prj:
             raise ValueError(f'No se encuentra el project {project}')
 
+        self.dir_out = prj.find('dir_db').text
         self.description = prj.find('description').text
-        self.db = prj.find('db').text.strip()
+        db = prj.find('db').text.strip()
+        self.db = join(self.dir_out, db)
         self.file_aquifers = prj.find('file_aquifers')
         self.file_outcrops = prj.find('file_outcrops')
         self.file_met = prj.find('file_met')
@@ -112,20 +115,20 @@ class BHIMES():
         sensitivity = prj.find('sensitivity')
         if sensitivity:
             self.par = {'whc': (float(sensitivity.find('whc').get('delta')),
-                                float(sensitivity.find('whc').get('neval'))
+                                int(sensitivity.find('whc').get('neval'))
                                ),
                         'kuz': (float(sensitivity.find('kuz').get('delta')),
-                                float(sensitivity.find('kuz').get('neval'))
+                                int(sensitivity.find('kuz').get('neval'))
                                )
                        }
 
 
     def delta(self, par_name: str):
-        return self.param[par_name][0]
+        return self.par[par_name][0]
 
 
     def neval(self, par_name: str):
-        return self.param[par_name][1]
+        return self.par[par_name][1]
 
 
     def _create_db(self):
@@ -352,9 +355,9 @@ class BHIMES():
                 words = line.strip().split(separator)
                 fid = words[0]
                 date = words[1]
-                p = float(words[2]) / 10.  # dmm -> mm
-                tmin = float(words[3]) / 10.  # dºC -> ºC
-                tmax = float(words[4]) / 10.
+                p = float(words[2])  # dmm -> mm
+                tmin = float(words[3])  # dºC -> ºC
+                tmax = float(words[4])
                 tavg = (tmin + tmax) / 2.
 
                 row = cur.execute(select1, (fid, date)).fetchone()
@@ -720,7 +723,7 @@ class BHIMES():
             print(f'{aquifer.name} xy eth')
 
             # solar radiation -Allen-
-            cur.execute(BHIMES.select_r0, (int(aquifer.y4326),))
+            cur.execute(BHIMES._select_r0, (int(aquifer.y4326),))
             r0 = np.array([row[0] for row in cur.fetchall()], np.float32)
 
             # t diarias
@@ -865,7 +868,7 @@ class BHIMES():
             et = np.empty((p.size), np.float32)
             if self.proc == 'hargreaves':
                 # solar radiation
-                cur.execute(BHIMES.select_r0, (int(aquifer.y4326),))
+                cur.execute(BHIMES._select_r0, (int(aquifer.y4326),))
                 sr = np.array([row[0] for row in cur.fetchall()], np.float32)
                 tmin = met[:, 2].astype(np.float32)
                 tmax = met[:, 3].astype(np.float32)
@@ -873,15 +876,15 @@ class BHIMES():
                 swb.hargreaves_samani(sr, imonths, tmax, tmin, tavg, et)
             else:
                 BHIMES._et_averaged_set(imonths, self.et_avg, et)
-            rch = np.empty((p.size), np.float32)
-            runoff = np.empty((p.size), np.float32)
-            etr =  np.empty((p.size), np.float32)
+            rch = np.zeros((p.size), np.float32)
+            runoff = np.zeros((p.size), np.float32)
+            etr =  np.zeros((p.size), np.float32)
 
             sum_outcrops_area = Outcrop.sum_area(outcrops)
             coefs = np.array([outcrop.area for outcrop in outcrops],
                              np.float32) / sum_outcrops_area
             pars = {'ia': 0., 'whc': 0., 'kdirect': 0., 'kuz': 0.,
-                          'klateral': 0., 'krunoff': 0.}
+                    'klateral': 0., 'krunoff': 0.}
             for key in pars:
                 pars[key] = BHIMES._averaged_parameter(key, coefs, outcrops)
 
@@ -890,7 +893,7 @@ class BHIMES():
             storages = np.array([pars['ia'], pars['ia']*c_ia0,
                                  pars['whc'], pars['whc']*c_whc0], np.float32)
             k = np.array([pars['kdirect'], pars['kuz'],
-                          pars['klateral'], pars['krunoff]']], np.float32)
+                          pars['klateral'], pars['krunoff']], np.float32)
 
             ndata = p.size
             psum = p.sum()
@@ -902,7 +905,7 @@ class BHIMES():
             for i in range(self.neval('kuz')):
                 xk = np.copy(k)
                 xk[1] = pars['kuz'] + (pars['kuz'] * self.delta('kuz') * i)
-                for j in range(self.n('whc')):
+                for j in range(self.neval('whc')):
                     n += 1
                     print(f'{n:n}')
                     xstorages = np.copy(storages)
@@ -931,17 +934,18 @@ class BHIMES():
 
                     np.savetxt(join(self.dir_out,
                                     f'aq_{aquifer.fid}_mm_iter_{n:n}.csv'),
-                               np.transpose([rch, runoff, etr]),
+                               np.transpose([p, et, rch, runoff, etr]),
                                delimiter=',', fmt='%0.1f',
-                               header='recarge,runoff,etr')
+                               header='p,et,recarge,runoff,etr')
             fo.close()
-            contour = contour * (sum_outcrops_area * 0.001)
+            for i in range(2, 5):
+                contour[:,i] = contour[:,i] * (sum_outcrops_area * 0.001)
             for i, item in enumerate(('recharge', 'runoff', 'etr')):
                 BHIMES._contour(f'{self.description}: {item}',
                                 contour[:, 0], contour[:, 1],
                                 contour[:, i+2], 'whc', 'kuz',
                                 join(self.dir_out,
-                                     f'aq_{aquifer.fid}_sensitivity'))
+                                     f'aq_{aquifer.fid}_sensitivity_{item}'))
 
         con.close()
 
