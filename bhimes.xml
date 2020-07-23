@@ -31,7 +31,7 @@ sensitivity: parameters related with sensivity analysis; this element is optiona
 		<db>cc.db</db>
 		<file_aquifers upsert="0" nskip="1" sep=",">H:\off\phdhs2127\recarga\cc_q\aq_aflora\acuifero.txt</file_aquifers>
 		<file_outcrops upsert="0" nskip="1" sep=";">H:\off\phdhs2127\recarga\cc_q\aq_aflora\afloramientos.txt</file_outcrops>
-		<file_met upsert="1"  nskip="1" sep=";">H:\off\phdhs2127\recarga\cc_q\meteo_out\p_tmin_tmax_idw.csv</file_met>
+		<file_met upsert="0"  nskip="1" sep=";">H:\off\phdhs2127\recarga\cc_q\meteo_out\p_tmin_tmax_idw.csv</file_met>
 		<select_aquifers>
 		select a.fid, a.name, round(a.y4326,0) lat
 		from aquifer a
@@ -45,7 +45,7 @@ sensitivity: parameters related with sensivity analysis; this element is optiona
 		<select_met>
 		select m."date", m.p , m.tmin, m.tmax, m.tavg
 		from met m
-		where m."date" >= '2018-10-01' and m."date" &lt;= '2019-09-30' and m.fid=?
+		where m."date" >= '1985-10-01' and m."date" &lt;= '2019-09-30' and m.fid=?
 		order by m."date";
 		</select_met>
 		<initial_condition>normal</initial_condition>
@@ -55,7 +55,7 @@ sensitivity: parameters related with sensivity analysis; this element is optiona
 		<xy_annual_dir>H:\\off\\phdhs2127\\recarga\\cc_q\\xy</xy_annual_dir>
 		<sensitivity>
 			<kuz delta="0.5" neval="10" />
-			<whc delta="0.5" neval="20" />
+			<whc delta="0.5" neval="10" />
 		</sensitivity>
 	</project>
 	<project name="BDA202006">

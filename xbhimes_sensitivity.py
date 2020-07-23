@@ -18,6 +18,7 @@ import littleLogging as logging
 
 project: str = 'DHS_QCC'
 et_proc: str = 'hargreaves'
+output: str = r'H:\off\phdhs2127\recarga\cc_q\output_serie_completa'
 
 
 if __name__ == "__main__":
@@ -40,7 +41,7 @@ if __name__ == "__main__":
         b.met_upsert_from_file01()
 
         # sensitivity
-        b.swb01_sensitivity()
+        b.swb01_sensitivity(output)
 
         xtime = time() - startTime
         print(f'El script tardó {xtime:0.1f} s')

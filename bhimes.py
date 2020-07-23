@@ -54,6 +54,8 @@ class BHIMES():
     _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order!
     _et_procedures = ('basic', 'hargreaves')
     _select_r0 = 'select r0 from allen.r0 where lat = ? order by "month"'
+    _tname_iters_ts = 'swb01_iters'
+    _tname_ts = 'swb01_ts'
 
 
     def __init__(self, project: str, et_proc: str = 'basic',
@@ -829,15 +831,18 @@ class BHIMES():
         plt.rcdefaults()
 
 
-    def swb01_sensitivity(self):
+    def swb01_sensitivity(self, dir_out: str):
         """
-        swb01 using kuz and whc in a defined set of values ranges
+        calls to swb01 using kuz and whc in a defined set of values ranges
         I test recharge, ret and runoff using whc and kuz in a range of
             values defined in self.params
         As an aquifer can have several outcrops, I average the outcrops
             parameter by area; this way, I just make a call to the function
             swb01 for each aquifer
-        The outputs area saved in text files
+        The outputs area saved in dir_out in text files: one has the time
+            series and the other a data summary of each simulation; additional
+            png files are saved (p, runoff and ret) considerig units are
+            in mm/day
         """
         from os.path import join
 
@@ -849,14 +854,10 @@ class BHIMES():
         cur.execute(self.select_aquifers.text)
         aquifers = [Aquifer(row) for row in cur.fetchall()]
 
+        self._create_tables_ts(cur)
+
         for aquifer in aquifers:
             print(f'{aquifer.name}')
-
-            fo = open(join(self.dir_out,
-                           f'aq_{aquifer.fid}_mm_iters.csv'), 'w')
-            fo.write('iter,ntimestep,iamax,ia0,whcmax,whc0,kdirect,kuz,'
-                     'klateral,krunoff,ndata,psum,npgt0,etsum,rchsum,'
-                     'runoffsum,etrsum\n')
 
             cur.execute(self.select_outcrops.text, (aquifer.fid,) )
             outcrops = [Outcrop(row) for row in cur.fetchall()]
@@ -895,11 +896,8 @@ class BHIMES():
             k = np.array([pars['kdirect'], pars['kuz'],
                           pars['klateral'], pars['krunoff']], np.float32)
 
-            ndata = p.size
-            psum = p.sum()
-            npgt0 = np.count_nonzero(p > 0.)
-            etsum = np.sum(et)
             n = 0
+            xf = p.size / 365.
             contour = np.empty((self.neval('kuz') * self.neval('whc'), 5),
                                np.float32)
             for i in range(self.neval('kuz')):
@@ -914,7 +912,6 @@ class BHIMES():
 
                     ier, xer = swb.swb01(self.time_step, xstorages, xk, p, et,
                                          rch, runoff, etr)
-
                     if ier >= 0:
                         a = (f'Balance error {xer}',
                              f'Aquifer: {aquifer.name}',
@@ -924,29 +921,24 @@ class BHIMES():
 
                     contour[n-1][:] = [xstorages[2], xk[1], rch.sum(),
                                  runoff.sum(), etr.sum()]
-                    fo.write(f'{n:n},{self.time_step:n},{xstorages[0]:0.2f},'
-                             f'{xstorages[1]:0.2f},{xstorages[2]:0.2f},'
-                             f'{xstorages[3]:0.2f},{xk[0]:0.2f},{xk[1]:0.2f},'
-                             f'{xk[2]:0.2f},{xk[3]:0.2f},'
-                             f'{ndata:n},{psum:0.2f},{npgt0:n},{etsum:0.2f},'
-                             f'{rch.sum():0.2f},{runoff.sum():0.2f},'
-                             f'{etr.sum():0.2f}\n')
+                    self._insert_iter_ts(cur, n, self.time_step,
+                                         xstorages[0], xstorages[1],
+                                         xstorages[2], xstorages[3],
+                                         xk[0], xk[1], xk[2], xk[3])
 
-                    np.savetxt(join(self.dir_out,
-                                    f'aq_{aquifer.fid}_mm_iter_{n:n}.csv'),
-                               np.transpose([p, et, rch, runoff, etr]),
-                               delimiter=',', fmt='%0.1f',
-                               header='p,et,recarge,runoff,etr')
-            fo.close()
+                    self._insert_ts(cur, aquifer.fid, n, dates, rch, runoff,
+                                    etr)
+
             for i in range(2, 5):
-                contour[:,i] = contour[:,i] * (sum_outcrops_area * 0.001)
+                contour[:,i] = contour[:,i] * (sum_outcrops_area * 0.001 / xf)
             for i, item in enumerate(('recharge', 'runoff', 'etr')):
-                BHIMES._contour(f'{self.description}: {item}',
+                BHIMES._contour(f'{aquifer.name}: {item} m3/yr',
                                 contour[:, 0], contour[:, 1],
-                                contour[:, i+2], 'whc', 'kuz',
-                                join(self.dir_out,
+                                contour[:, i+2], 'whc mm', 'kuz mm',
+                                join(dir_out,
                                      f'aq_{aquifer.fid}_sensitivity_{item}'))
 
+        con.commit()
         con.close()
 
 
@@ -966,17 +958,24 @@ class BHIMES():
         averaged parameter by area
         """
         if param == 'ia':
-            x = np.array([outcrop.ia * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+            x = np.array([outcrop.ia * coefs[i] for i,
+                          outcrop in enumerate(outcrops)], np.float32)
         elif param == 'whc':
-            x = np.array([outcrop.whc * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+            x = np.array([outcrop.whc * coefs[i] for i,
+                          outcrop in enumerate(outcrops)], np.float32)
         elif param == 'kdirect':
-            x = np.array([outcrop.kdirect * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+            x = np.array([outcrop.kdirect * coefs[i] for i,
+                          outcrop in enumerate(outcrops)],
+                        np.float32)
         elif param == 'kuz':
-            x = np.array([outcrop.kuz * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+            x = np.array([outcrop.kuz * coefs[i] for i,
+                          outcrop in enumerate(outcrops)], np.float32)
         elif param == 'klateral':
-            x = np.array([outcrop.klateral * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+            x = np.array([outcrop.klateral * coefs[i] for i,
+                          outcrop in enumerate(outcrops)], np.float32)
         elif param == 'krunoff':
-            x = np.array([outcrop.krunoff * coefs[i] for i, outcrop in enumerate(outcrops)], np.float32)
+            x = np.array([outcrop.krunoff * coefs[i] for i,
+                          outcrop in enumerate(outcrops)], np.float32)
         else:
             raise ValueError(f'{param} no es un parámetro válido')
         return x.sum()
@@ -989,7 +988,7 @@ class BHIMES():
         """
         import matplotlib.pyplot as plt
 
-        fig, ax1 = plt.subplots()
+        fig, ax1 = plt.subplots(figsize=(8,6))
 
         ax1.tricontour(x*scale, y*scale, z*scale, levels=14, linewidths=0.5,
                        colors='k')
@@ -1005,6 +1004,73 @@ class BHIMES():
         plt.show()
         fig.savefig(dst)
         plt.close('all')
+
+
+    def _create_tables_ts(self, cur):
+        """
+        saves time series outputs to table swb01_ts
+        """
+
+        drop_table0 = f'drop table if exists {BHIMES._tname_iters_ts}'
+        drop_table1 = f'drop table if exists {BHIMES._tname_ts}'
+
+        create_table0 = \
+        f"""
+        create table if not exists {BHIMES._tname_iters_ts} (
+            n integer,
+            ntimestep integer,
+            iamax real,
+            ia0 real,
+            whcmax real,
+            whc0 real,
+            kdirect real,
+            kuz real,
+            klateral real,
+            krunoff real,
+            primary key (n)
+        )
+        """
+
+        create_table1 = \
+        f"""
+        create table if not exists {BHIMES._tname_ts} (
+            aquifer integer,
+            n integer,
+            date text,
+            rch real,
+            rnf real,
+            etr real,
+            primary key(aquifer, n, date)
+        )
+        """
+        for item in (drop_table0, drop_table1, create_table0, create_table1):
+            cur.execute(item)
+
+
+    def _insert_iter_ts(self, cur, n, ntimestep, iamax, ia0, whcmax, whc0,
+                        kdirect, kuz, klateral, krunoff):
+        insert = \
+        f"""
+        insert into {BHIMES._tname_iters_ts} (n, ntimestep, iamax, ia0,
+            whcmax, whc0, kdirect, kuz, klateral, krunoff)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        cur.execute(insert, (n, ntimestep, float(iamax), float(ia0),
+                             float(whcmax), float(whc0),
+                             float(kdirect), float(kuz), float(klateral),
+                             float(krunoff)))
+
+
+    def _insert_ts(self, cur, aquifer_fid, n, dates, rch, rnf, etr):
+
+        insert = f"""
+        insert into {BHIMES._tname_ts}
+        (aquifer, n, date, rch, rnf, etr)
+        values (?, ?, ?, ?, ?, ?)
+        """
+        for i in range(rch.size):
+            cur.execute(insert, (aquifer_fid, n, dates[i], float(rch[i]),
+                                 float(rnf[i]), float(etr[i])))
 
 
 class Aquifer():

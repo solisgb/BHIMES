@@ -182,11 +182,17 @@ def _ugw_drainage(whcmax, whc0, kuz):
     if whcmax < tiny:
         return 0., 0.
     n = 24
-    for i in range(n)
-        kus = kuz * whc0 / whcmax
-        wd = min(whc0, kus)
-        whc0 = whc0 - wd
-    return whc0, wd
+    kuz1 = kuz / n
+    whc1 = whc0
+    wd = 0.
+    for i in range(1, n):
+        kus = kuz1 * whc1 / whcmax
+        wdi = min(whc1, kus)
+        whc1 = whc1 - wdi
+        wd += wdi
+        if whc1 < tiny:
+            break
+    return whc1, wd
 
 
 @jit(nopython=True)
@@ -414,7 +420,7 @@ def _contour(title, x, y, z, xlabel, ylabel, dst, scale: float=1.0):
     plt.close('all')
 
 
-#@jit(nopython=True)
+@jit(nopython=True)
 def swb01_001(ntimestep, storages, k, p, et, rch, runoff, etr):
     """
     Look at swb01, I think it's better
