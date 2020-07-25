@@ -11,6 +11,68 @@ from numba import jit, void, float32, int32
 import numpy as np
 
 
+def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, et, wd, runoff, etr):
+    """
+    args
+    whxmax: max water holding content mm
+    whcr: residual whc
+    whc0: initial whc mm
+    kuz: soil satured permeability mm/h
+    exp: empirically deduced exponent
+    winput: water input mm/h
+    et: evapotranspiration mm/h
+    output
+    whc3: whc at the end
+    wd: water drained
+    runoff: runoff
+    etr: real et
+    """
+    if whcmax < 0.1:
+        wd.fill(0.)
+        runoff[:] = p[:]
+        etr.fill(0.)
+        return 0, 0, 0
+
+    tiny = 0.0001
+    kuzh = kuz / 24
+    ph = np.empty((24), np.float32)
+    wdh = np.empty((24), np.float32)
+    runoffh = np.empty((24), np.float32)
+    etrh = np.empty((24), np.float32)
+    whce = whcmax - whcr
+    for i in range(p.size):
+        ph.fill(0.)
+        if p[i] > 0.:
+            m = np.random(23) + 1
+            p1h = p[i] / m
+            ph[0:m] = p1h
+        et1h = et[i] / 24.
+        for j in range(ph.size):
+            whc1 = whc0 + ph[j]
+            whc2 = min(whcmax, whc1)
+            runoffh[j] = whc1 - whc2
+            x1 = whc2 - whcr
+            x2 = kuzh * (x1 / whce)**exp
+            wdh[j] = min(x1, x2)
+            whc3 = whc2 - wdh[j]
+            if ph[j] > 0:
+                etrh[j] = 0.
+            else:
+                x1 = whc3 - whcr
+                etrh[j] = min(x1, et1h * x1 / whce)
+            whc3 -= etrh[j]
+            balan = ph[j] - wdh[j] - runoffh[j] - etrh[j] + whc0 - whc3
+            if balan > tiny:
+                return 1, i, j
+            whc0 = whc3
+
+        wd[i] = wdh.sum()
+        runoff[i] = runoffh.sum()
+        etr[i] = etrh.sum()
+
+    return 0, 0, 0
+
+
 @jit(nopython=True)
 def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
     """
@@ -167,7 +229,7 @@ def _storage_output(whcmax, whc0, pwr):
 
 
 @jit(nopython=True)
-def _ugw_drainage(whcmax, whc0, kuz):
+def _ugw_drainage(whcmax, whc0, kuz, exp: float = 12.):
     """
     under ground water drainage
     parameters:
@@ -181,18 +243,15 @@ def _ugw_drainage(whcmax, whc0, kuz):
     tiny = 0.00001
     if whcmax < tiny:
         return 0., 0.
-    n = 24
-    kuz1 = kuz / n
-    whc1 = whc0
-    wd = 0.
+    n = 25
+    whc = np.zeros((n), np.float32)
+    whc[0] = whc0
+    wd = np.zeros((n), np.float32)
     for i in range(1, n):
-        kus = kuz1 * whc1 / whcmax
-        wdi = min(whc1, kus)
-        whc1 = whc1 - wdi
-        wd += wdi
-        if whc1 < tiny:
-            break
-    return whc1, wd
+        k = kuz * (whc[i-1] / whcmax)**exp
+        wd[i] = min(whc[i-1], k)
+        whc[i] = whc[i-1] - wd[i]
+    return whc[-1], wd.sum()
 
 
 @jit(nopython=True)
