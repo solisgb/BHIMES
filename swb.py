@@ -11,27 +11,36 @@ from numba import jit, void, float32, int32
 import numpy as np
 
 
-def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, et, wd, runoff, etr):
+def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, nh, et, wd, runoff, etr):
     """
+    hourly water soil balance of daily data
     args
-    whxmax: max water holding content mm
-    whcr: residual whc
-    whc0: initial whc mm
-    kuz: soil satured permeability mm/h
-    exp: empirically deduced exponent
-    winput: water input mm/h
-    et: evapotranspiration mm/h
-    output
-    whc3: whc at the end
-    wd: water drained
-    runoff: runoff
-    etr: real et
+    in
+        whxmax: soil max water holding content -whc- mm
+        whcr: residual whc mm
+        whc0: initial whc mm
+        kuz: soil satured permeability mm/d
+        exp: empirically deduced exponent
+        p: precipitation -water input- mm/d
+        nh: number of hours of rain
+        et: evapotranspiration mm/d
+    out
+        wd: water drained
+        runoff: runoff
+        etr: real et
+    returns
+        balance error in day i hour j
+        i: element i (day) where a balance error is raised
+        j: element j (hour) where a balance error is raised
+        if no error balance is raised it returns 0., -1, -1
     """
+    no_error = 0.
+    no_ij = -1
     if whcmax < 0.1:
         wd.fill(0.)
         runoff[:] = p[:]
         etr.fill(0.)
-        return 0, 0, 0
+        return no_error, no_ij, no_ij
 
     tiny = 0.0001
     kuzh = kuz / 24
@@ -43,9 +52,8 @@ def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, et, wd, runoff, etr):
     for i in range(p.size):
         ph.fill(0.)
         if p[i] > 0.:
-            m = np.random(23) + 1
-            p1h = p[i] / m
-            ph[0:m] = p1h
+            p1h = p[i] / nh[i]
+            ph[0:nh[i]] = p1h
         et1h = et[i] / 24.
         for j in range(ph.size):
             whc1 = whc0 + ph[j]
@@ -62,15 +70,15 @@ def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, et, wd, runoff, etr):
                 etrh[j] = min(x1, et1h * x1 / whce)
             whc3 -= etrh[j]
             balan = ph[j] - wdh[j] - runoffh[j] - etrh[j] + whc0 - whc3
-            if balan > tiny:
-                return 1, i, j
+            if abs(balan) > tiny:
+                return balan, i, j
             whc0 = whc3
 
         wd[i] = wdh.sum()
         runoff[i] = runoffh.sum()
         etr[i] = etrh.sum()
 
-    return 0, 0, 0
+    return no_error, no_ij, no_ij
 
 
 @jit(nopython=True)
@@ -102,6 +110,8 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
     iamax, whcmax: max values of ia and whc (data)
     ia1, whc1: initial values of ia and whc, then change in function
     """
+    no_error = 0.
+    no_i = -1
     iamax = storages[0]
     ia1 = storages[1]
     whcmax = storages[2]
@@ -177,8 +187,9 @@ def swb01(ntimestep, storages, k, p, et, rch, runoff, etr):
 
             balan = p1 - rt2aq - rl - rnf - etr_soil + whc_initial - whc1
             if abs(balan) > 0.001:
-                return i, balan
-    return -1, balan
+                return balan, i
+
+    return no_error, no_i
 
 
 @jit(nopython=True)
@@ -480,9 +491,25 @@ def _contour(title, x, y, z, xlabel, ylabel, dst, scale: float=1.0):
 
 
 @jit(nopython=True)
+def nhours_generator01(p, nh_gt1):
+    """
+    A generator of number of hours of rain
+    """
+    nh = np.zeros((p.size), np.int32)
+    j = -1
+    for i in range(p.size):
+        if p[i] > 0:
+            if p[i] <= 1.:
+                nh[i] = 1
+            else:
+                j += 1
+                nh[i] = nh_gt1[j]
+    return nh
+
+
 def swb01_001(ntimestep, storages, k, p, et, rch, runoff, etr):
     """
-    Look at swb01, I think it's better
+    Deprecated
     soil water balance in a temporal data serie
     parameters:
         ntimestep: number of iterations to work out water balance in

@@ -8,12 +8,14 @@ Before running, set carefully parameter values in bhimes.xml and set project,
      et_proc & annual_graphs in this module
 
 Parameter in this module
+procedure: funtion name where soil water balance is made: swb01 or swb24
 project: project in bhimes.xml
 et_proc: et calculation procedure; implemented ('basic', 'hargreaves')
 annual_graphs: if True save png files
 """
 import littleLogging as logging
 
+procedure: str = 'swb24'
 project: str = 'DHS_QCC'
 et_proc: str = 'hargreaves'
 annual_graphs: bool = False
@@ -39,7 +41,7 @@ if __name__ == "__main__":
         b.met_upsert_from_file01()
 
         # run the swb
-        b.swb01()
+        b.swb(procedure)
 
         if annual_graphs:
             b.save_annual_graphs()  # xy recharge, runoff & ret

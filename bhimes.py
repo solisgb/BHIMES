@@ -123,7 +123,11 @@ class BHIMES():
                                 int(sensitivity.find('kuz').get('neval'))
                                )
                        }
-
+            element = sensitivity.find('bcexp')
+            if element:
+                self.par['bcexp'] = (float(element.get('delta')),
+                                     int(element.get('neval'))
+                                    )
 
     def delta(self, par_name: str):
         return self.par[par_name][0]
@@ -166,6 +170,8 @@ class BHIMES():
             kuz real,
             klateral real,
             krunoff real,
+            whcr real,
+            exp real,
             foreign key (fid) references aquifer(fid)
         )
         """
@@ -258,6 +264,7 @@ class BHIMES():
     def outcrop_upsert_from_file(self):
         """
         inserts or update outcrops data from text file -utf8-
+        the column meaning is explained in class Outcrop
         """
 
         select1 = \
@@ -267,14 +274,14 @@ class BHIMES():
         update1 = \
         """
         update outcrop set aquifer=?, lito=?, period=?, perme=?, area=?,
-        ia=?, whc=?, kdirect=?, kuz=?, klateral=?, krunoff=?
+        ia=?, whc=?, kdirect=?, kuz=?, klateral=?, krunoff=?, whcr=?, exp=?
         where fid=?
         """
         insert1 = \
         """
         insert into outcrop(fid, aquifer, lito, period, perme, area, ia, whc,
-            kdirect, kuz, klateral, krunoff)
-        values (?,?,?,?,?,?,?,?,?,?,?,?)
+            kdirect, kuz, klateral, krunoff, whcr, exp)
+        values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         if int(self.file_outcrops.get('upsert')) != 1:
             return
@@ -305,15 +312,17 @@ class BHIMES():
                 kuz = float(words[9])
                 klateral = float(words[10])
                 krunoff = float(words[11])
+                whcr = float(words[12])
+                exp = float(words[13])
                 row = cur.execute(select1, (fid,)).fetchone()
                 if row:
                     cur.execute(update1, (acu, lito, period, perme,
                                           area, ia, whc, kdirect, kuz,
-                                          klateral, krunoff, fid))
+                                          klateral, krunoff, whcr, exp, fid))
                 else:
                     cur.execute(insert1, (fid, acu, lito, period, perme,
                                           area, ia, whc, kdirect, kuz,
-                                          klateral, krunoff))
+                                          klateral, krunoff, whcr, exp))
 
         con.commit()
         con.close()
@@ -372,24 +381,32 @@ class BHIMES():
         con.close()
 
 
-    def swb01(self):
+    def swb(self, procedure):
         """
-        soil water balance version 0.01
+        function where the call to the specific soil water balance function
+            is made
+        arg
+            procedure: swb function name
         """
         from os.path import dirname, join
 
-        metadata_file = 'swb01_metadata.csv'
+        metadata_file = 'metadata.csv'
+        procedures = ('swb01', 'swb24')
+        if procedure not in procedures:
+            raise ValueError(f'arg procedure must be in ',
+                             f'{",".join(procedures)}')
 
         con = sqlite3.connect(self.db)
         cur = con.cursor()
         cur.execute("PRAGMA auto_vacuum = FULL")
         cur.execute('attach database ? as allen', ('r0.db',))
-        self._create_output_table(con, cur)
+        table_output = self.table_output + '_' + procedure
+        self._create_output_table(con, cur, table_output)
 
         cur.execute(self.select_aquifers.text)
         aquifers = [Aquifer(row) for row in cur.fetchall()]
         fmeta = open(join(dirname(self.db), metadata_file), 'w')
-        self._write_metadata_base(fmeta)
+        self._write_metadata_base(fmeta, procedure)
 
         for aquifer in aquifers:
             print(f'{aquifer.name}')
@@ -401,6 +418,10 @@ class BHIMES():
             dates = met[:, 0]
             imonths = np.array([int(row[5:7])-1 for row in dates], np.int32)
             p = met[:,1].astype(np.float32)
+            if procedure == 'swb24':
+                m = np.sum(p > 1.)
+                gt1 = np.random.randint(1, high=25, size=(m,))
+                nh = swb.nhours_generator01(p, gt1)
             et = np.empty((p.size), np.float32)
             if self.proc == 'hargreaves':
                 # solar radiation
@@ -427,21 +448,26 @@ class BHIMES():
                 k = np.array([outcrop.kdirect, outcrop.kuz,
                               outcrop.klateral, outcrop.krunoff],
                              np.float32)
-                ier, xer = swb.swb01(self.time_step, storages, k, p, et, rch1,
-                                     runoff1, etr1)
-                if ier >= 0:
+                if procedure == 'swb01':
+                    xer, irow = swb.swb01(self.time_step, storages, k, p, et,
+                                          rch1, runoff1, etr1)
+                else:
+                    xer, irow, jm = \
+                    swb.swb24(outcrop.whc, outcrop.whcr, outcrop.whc*c_whc0,
+                              outcrop.kuz, outcrop.kdirect, outcrop.exp,
+                              p, nh, et, rch1, runoff1, etr1)
+                if irow >= 0:
                     a = (f'Balance error {xer}',  f'Aquifer: {aquifer.name}',
                          f'Outcrop: {outcrop.fid}',
-                         f'Date: {dates[ier]} (i {ier})')
+                         f'Date: {dates[irow]} (i {irow})')
                     a = '\n'.join(a)
                     raise ValueError(a)
-
-                rch += rch1 * (outcrop.area * 0.001)
-                runoff += runoff1 * (outcrop.area * 0.001)
-                etr += etr1 * (outcrop.area * 0.001)
-                self._write_metadata(fmeta, aquifer, outcrop)
-
-            self._insert_output(con, cur, aquifer.fid, dates, rch, runoff, etr)
+                self._insert_output(con, cur, aquifer.fid, outcrop.fid, dates,
+                                    rch1, runoff1, etr1, procedure)
+                rch += rch1  # * (outcrop.area * 0.001)
+                runoff += runoff1  # * (outcrop.area * 0.001)
+                etr += etr1  # * (outcrop.area * 0.001)
+                self._write_metadata(fmeta, procedure, aquifer, outcrop)
 
         con.close()
         fmeta.close()
@@ -470,12 +496,13 @@ class BHIMES():
         return ia0, whc0
 
 
-    def _create_output_table(self, con, cur):
+    def _create_output_table(self, con, cur, procedure):
         """
         creates the output table
         parameters
         con: connection -already open-
         cur: cursor to conn -already open-
+        procedure: function name where swb is made
         """
 
         stm1 = f'drop table if exists {self.table_output}'
@@ -484,11 +511,13 @@ class BHIMES():
         f"""
         create table if not exists {self.table_output}(
             aquifer integer,
+            outcrop integer,
             date text(10),
             rch real,
             runoff real,
-            etr, real,
-            primary key (aquifer, date)
+            etr real,
+            procedure text,
+            primary key (aquifer, outcrop, date)
         )
         """
         cur.execute(stm1)
@@ -496,37 +525,34 @@ class BHIMES():
         con.commit()
 
 
-    def _insert_output(self, con, cur, aquifer, dates, rch, runoff, etr):
+    def _insert_output(self, con, cur, aquifer, outcrop, dates,
+                       rch, runoff, etr, procedure):
         """
         insert or update output in output table
         parameters
         con: connection -already open-
         cur: cursos to conn -already open-
+        procedure: function name where swb is made
         dates, np array str: dates (aaaa-mm-dd)
         rch, np array float: calculated recharge mm
         runoff, np array float: calculated runoff mm
         etr, np array float: calculated et mm -real evapotranspiration-
-
-        There is an elegant solution at
-        https://stackoverflow.com/questions/18621513/python-insert-numpy-array
-        -into-sqlite3-database
-        witch I'm not going to apply because I want to access database outside
-        python
         """
 
         stm1 =\
         f"""
-        insert into {self.table_output} (aquifer, date, rch, runoff, etr)
-        values (?, ?, ?, ?, ?)
+        insert into {self.table_output}
+        (aquifer, outcrop, date, rch, runoff, etr, procedure)
+        values (?, ?, ?, ?, ?, ?, ?)
         """
 
         for i in range(dates.size):
-            cur.execute(stm1, (aquifer, dates[i],
-                        float(rch[i]), float(runoff[i]), float(etr[i])))
+            cur.execute(stm1, (aquifer, outcrop, dates[i], float(rch[i]),
+                               float(runoff[i]), float(etr[i]), procedure))
         con.commit()
 
 
-    def _write_metadata_base(self, fmeta):
+    def _write_metadata_base(self, fmeta, procedure):
         """
         saves data from selected project
         """
@@ -535,7 +561,8 @@ class BHIMES():
         metadata =\
         (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
          self.description,
-         'calculation procedure: ' + self.proc,
+         'swb produre: ' + procedure,
+         'et procedure: ' + self.proc,
          'aquifers imported from: ' + self.file_aquifers.text,
          'outcrops imported from: ' + self.file_outcrops.text,
          'meteorogical data imported from: ' + self.file_met.text,
@@ -551,30 +578,45 @@ class BHIMES():
             et_avg = ','.join(et_avg)
             metadata = metadata + f'\n{et_avg}'
         fmeta.write(f'{metadata}\n')
-        self._write_header(fmeta)
+        self._write_header(fmeta, procedure)
 
 
-    def _write_header(self, fmeta):
+    def _write_header(self, fmeta, procedure):
         """
         writes header of metadata
         """
-        a = ('aquifer.name', 'aquifer.y4326',
-             'outcrop.fid', 'outcrop.area',
-             'outcrop.ia', 'outcrop.whc',
-             'outcrop.kdirect', 'outcrop.kuz',
-             'outcrop.klateral', 'outcrop.krunoff')
+        if procedure == 'swb01':
+            a = ('aquifer.name', 'aquifer.y4326',
+                 'outcrop.fid', 'outcrop.area',
+                 'outcrop.ia', 'outcrop.whc',
+                 'outcrop.kdirect', 'outcrop.kuz',
+                 'outcrop.klateral', 'outcrop.krunoff'
+                )
+        else:
+            a = ('aquifer.name', 'aquifer.y4326',
+                 'outcrop.fid', 'outcrop.area',
+                 'outcrop.whc', 'outcrop.whcr',
+                 'outcrop.kuz', 'outcrop.exponent'
+                )
         fmeta.write(f'{",".join(a)}\n')
 
 
-    def _write_metadata(self, fmeta, aquifer, outcrop):
+    def _write_metadata(self, fmeta, procedure, aquifer, outcrop):
         """
         writes metada
         """
-        a = (f'{aquifer.name}', '{aquifer.y4326}',
-             f'{outcrop.fid:n}', f'{outcrop.area:0.1f}',
-             f'{outcrop.ia:0.2f}', f'{outcrop.whc:0.2f}',
-             f'{outcrop.kdirect:0.2f}', f'{outcrop.kuz:0.2f}',
-             f'{outcrop.klateral:0.2f}', f'{outcrop.krunoff:0.2f}')
+        if procedure == 'swb01':
+            a = (f'{aquifer.name}', '{aquifer.y4326}',
+                 f'{outcrop.fid:n}', f'{outcrop.area:0.1f}',
+                 f'{outcrop.ia:0.2f}', f'{outcrop.whc:0.2f}',
+                 f'{outcrop.kdirect:0.2f}', f'{outcrop.kuz:0.2f}',
+                 f'{outcrop.klateral:0.2f}', f'{outcrop.krunoff:0.2f}')
+        else:
+            a = (f'{aquifer.name}', '{aquifer.y4326}',
+                 f'{outcrop.fid:n}', f'{outcrop.area:0.1f}',
+                 f'{outcrop.whc:0.2f}', f'{outcrop.whcr:0.2f}',
+                 f'{outcrop.kuz:0.2f}', f'{outcrop.exp:0.3f}'
+                )
         fmeta.write(f'{",".join(a)}\n')
 
 
@@ -942,6 +984,117 @@ class BHIMES():
         con.close()
 
 
+    def swb24_sensitivity(self, dir_out: str):
+        """
+        calls to swb24 using exp, kuz and whc in a defined set of values ranges
+        I test recharge, ret and runoff using exp, whc and kuz in a range of
+            values defined in self.params
+        As an aquifer can have several outcrops, I average the outcrops
+            parameter by area; this way, I just make a call to the function
+            swb01 for each aquifer
+        The outputs area saved in dir_out in text files: one has the time
+            series and the other a data summary of each simulation; additional
+            png files are saved (p, runoff and ret) considerig units are
+            in mm/day
+        """
+        from os.path import join
+
+        con = sqlite3.connect(self.db)
+        cur = con.cursor()
+        cur.execute("PRAGMA auto_vacuum = FULL")
+        cur.execute('attach database ? as allen', ('r0.db',))
+
+        cur.execute(self.select_aquifers.text)
+        aquifers = [Aquifer(row) for row in cur.fetchall()]
+
+        self._create_tables_ts(cur)
+
+        for aquifer in aquifers:
+            print(f'{aquifer.name}')
+
+            cur.execute(self.select_outcrops.text, (aquifer.fid,) )
+            outcrops = [Outcrop(row) for row in cur.fetchall()]
+            cur.execute(self.select_met.text, (aquifer.fid,) )
+            met = np.array([row for row in cur.fetchall()])
+            dates = met[:, 0]
+            imonths = np.array([int(row[5:7])-1 for row in dates], np.int32)
+            p = met[:,1].astype(np.float32)
+            m = np.sum(p > 1.)
+            gt1 = np.random.randint(1, high=25, size=(m,))
+            nh = swb.nhours_generator01(p, gt1)
+            et = np.empty((p.size), np.float32)
+            if self.proc == 'hargreaves':
+                # solar radiation
+                cur.execute(BHIMES._select_r0, (int(aquifer.y4326),))
+                sr = np.array([row[0] for row in cur.fetchall()], np.float32)
+                tmin = met[:, 2].astype(np.float32)
+                tmax = met[:, 3].astype(np.float32)
+                tavg = met[:, 4].astype(np.float32)
+                swb.hargreaves_samani(sr, imonths, tmax, tmin, tavg, et)
+            else:
+                BHIMES._et_averaged_set(imonths, self.et_avg, et)
+            rch = np.zeros((p.size), np.float32)
+            runoff = np.zeros((p.size), np.float32)
+            etr =  np.zeros((p.size), np.float32)
+
+            sum_outcrops_area = Outcrop.sum_area(outcrops)
+            coefs = np.array([outcrop.area for outcrop in outcrops],
+                             np.float32) / sum_outcrops_area
+            pars = {'whc': 0., 'whcr': 0., 'kuz': 0., 'bcexp': 0.}
+            for key in pars:
+                pars[key] = BHIMES._averaged_parameter_24(key, coefs, outcrops)
+
+            c_ia0, c_whc0 = self._coef_initial_wstorages()
+
+            n = 0
+            xf = p.size / 365.
+            contour = np.empty((self.neval('exp') * self.neval('kuz') \
+                                * self.neval('whc'), 5), np.float32)
+            for i in range(self.neval('exp')):
+                xexp = pars['bcexp'] + (pars['bcexp'] * self.delta('exp') * i)
+                for j in range(self.neval('kuz')):
+                    xkuz = pars['kuz'] + (pars['kuz'] * self.delta('kuz') * j)
+                    for k in range(self.neval('whc')):
+                        xwhc = \
+                        pars['whc'] + (pars['whc'] * self.delta('whc') * k)
+                        n += 1
+                        print(f'{n:n}')
+
+                        xer, irow, jh = \
+                        swb.swb24(xwhc, pars['whcr'], pars['whcr']*c_whc0,
+                                  xkuz, pars['kdirect'], xexp, p, nh, et, rch,
+                                  runoff, etr)
+
+                        if irow >= 0:
+                            a = (f'Balance error {xer}',
+                                 f'Aquifer: {aquifer.name}',
+                                 f'Date: {dates[irow]} (i {irow:n}, j {jh:n})')
+                            a = '\n'.join(a)
+                            raise ValueError(a)
+
+                    contour[n-1][:] = [xstorages[2], xk[1], rch.sum(),
+                                 runoff.sum(), etr.sum()]
+                    self._insert_iter_ts(cur, n, self.time_step,
+                                         xstorages[0], xstorages[1],
+                                         xstorages[2], xstorages[3],
+                                         xk[0], xk[1], xk[2], xk[3])
+
+                    self._insert_ts(cur, aquifer.fid, n, dates, rch, runoff,
+                                    etr)
+
+            for i in range(2, 5):
+                contour[:,i] = contour[:,i] * (sum_outcrops_area * 0.001 / xf)
+            for i, item in enumerate(('recharge', 'runoff', 'etr')):
+                BHIMES._contour(f'{aquifer.name}: {item} m3/yr',
+                                contour[:, 0], contour[:, 1],
+                                contour[:, i+2], 'whc mm', 'kuz mm',
+                                join(dir_out,
+                                     f'aq_{aquifer.fid}_sensitivity_{item}'))
+
+        con.commit()
+        con.close()
+
+
     @staticmethod
     def _coef_area_get(outcrops):
         """
@@ -956,12 +1109,16 @@ class BHIMES():
     def _averaged_parameter(param, coefs, outcrops):
         """
         averaged parameter by area
+        parameter are different in swb01 and swb24
         """
         if param == 'ia':
             x = np.array([outcrop.ia * coefs[i] for i,
                           outcrop in enumerate(outcrops)], np.float32)
         elif param == 'whc':
             x = np.array([outcrop.whc * coefs[i] for i,
+                          outcrop in enumerate(outcrops)], np.float32)
+        elif param == 'whcr':
+            x = np.array([outcrop.whcr * coefs[i] for i,
                           outcrop in enumerate(outcrops)], np.float32)
         elif param == 'kdirect':
             x = np.array([outcrop.kdirect * coefs[i] for i,
@@ -975,6 +1132,9 @@ class BHIMES():
                           outcrop in enumerate(outcrops)], np.float32)
         elif param == 'krunoff':
             x = np.array([outcrop.krunoff * coefs[i] for i,
+                          outcrop in enumerate(outcrops)], np.float32)
+        elif param == 'bcexp':
+            x = np.array([outcrop.exp * coefs[i] for i,
                           outcrop in enumerate(outcrops)], np.float32)
         else:
             raise ValueError(f'{param} no es un parámetro válido')
@@ -1105,7 +1265,10 @@ class Aquifer():
 
 class Outcrop():
     """
-    afloramientos permeables
+    permeable outcrops
+    currently I can call 2 swb function with sligthly number of outcrops
+        parameters. The outcrop class has the parameters of both
+        functions
     """
 
 
@@ -1114,12 +1277,17 @@ class Outcrop():
         fid: identifier
         area: outcrop area m2
         ia: initial abstraction mm
+        whc: mas water holding content mm
         kdirect: k recharge mm
         kuz: k unsatured zone mm
         klateral: k lateral applied to kuz mm
         krunof: k from runoff to kuz mm
+        whcr: residual whc -whc > whcr- mm
+        exp: exponent in the relation ((whc1-whcr)/(whc/whcr))**exp
         """
         self.data = tuple([row for row in data])
+        if self.area <= 0:
+            raise ValueError(f'outcrop {self.fid}, area <=0')
 
 
     @property
@@ -1160,6 +1328,16 @@ class Outcrop():
     @property
     def krunoff(self):
         return self.data[7]
+
+
+    @property
+    def whcr(self):
+        return self.data[8]
+
+
+    @property
+    def exp(self):
+        return self.data[8]
 
 
     @staticmethod

@@ -142,13 +142,13 @@ def test03():
     whcmax = 25
     whcr = 1
     whc0 = whcmax * 0.5
-    kuz0 = 150
-    exp = 12
+    kuz0 = 10
+    exp = 0.5
     n = 24
     et = np.empty((n), np.float32)
     et.fill(0.5)
     p = np.zeros((n), np.float32)
-    p[4:7] = 5.
+    p[4] = 15.
 
     kuz = kuz0/n
     whc = np.zeros((n+1), np.float32)

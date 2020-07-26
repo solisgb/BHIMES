@@ -38,22 +38,23 @@ sensitivity: parameters related with sensivity analysis; this element is optiona
 		where a.fid = 1;
 		</select_aquifers>
 		<select_outcrops>
-		select fid, round(area,0) as sup, ia, whc, kdirect, kuz, klateral, krunoff
+		select fid, round(area,0) as sup, ia, whc, kdirect, kuz, klateral, krunoff, whcr, exp
 		from outcrop
 		where aquifer=?;
 		</select_outcrops>
 		<select_met>
 		select m."date", m.p , m.tmin, m.tmax, m.tavg
 		from met m
-		where m."date" >= '1985-10-01' and m."date" &lt;= '2019-09-30' and m.fid=?
+		where m."date" >= '2018-10-01' and m."date" &lt;= '2019-09-30' and m.fid=?
 		order by m."date";
 		</select_met>
 		<initial_condition>normal</initial_condition>
 		<time_step>6</time_step>
 		<et_avg>0.6, 0.5, 0.7, 0.8, 0.9, 1.1, 1.2, 1.2, 0.9, 0.8, 0.7, 0.6</et_avg>
 		<table_output>rch_202007</table_output>
-		<xy_annual_dir>H:\\off\\phdhs2127\\recarga\\cc_q\\xy</xy_annual_dir>
+		<xy_annual_dir>H:\off\phdhs2127\recarga\cc_q\ah2018swb24</xy_annual_dir>
 		<sensitivity>
+			<bcexp delta="1.0" neval="10"/>
 			<kuz delta="0.5" neval="10" />
 			<whc delta="0.5" neval="10" />
 		</sensitivity>
