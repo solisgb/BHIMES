@@ -13,7 +13,11 @@ import numpy as np
 
 def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, nh, et, wd, runoff, etr):
     """
-    hourly water soil balance of daily data
+    water soil balance of daily data
+    the water balance is calculated in an intradaily basis controlled by
+        the constant ndaily_div; for instance, if ndaily_div is 24,
+        the balance is calculated each hour. Be carefull, if you modify
+        ndaily_div you must modify the nh values accordingly
     args
     in
         whxmax: soil max water holding content -whc- mm
@@ -22,7 +26,7 @@ def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, nh, et, wd, runoff, etr):
         kuz: soil satured permeability mm/d
         exp: empirically deduced exponent
         p: precipitation -water input- mm/d
-        nh: number of hours of rain
+        nh: number of daily divisions to calculate the balance
         et: evapotranspiration mm/d
     out
         wd: water drained
@@ -35,6 +39,7 @@ def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, nh, et, wd, runoff, etr):
         if no error balance is raised it returns 0., -1, -1
     """
     no_error = 0.
+    ndaily_div = 24
     no_ij = -1
     if whcmax < 0.1:
         wd.fill(0.)
@@ -43,18 +48,96 @@ def swb24(whcmax, whcr, whc0, kuz, kdirect, exp, p, nh, et, wd, runoff, etr):
         return no_error, no_ij, no_ij
 
     tiny = 0.0001
-    kuzh = kuz / 24
-    ph = np.empty((24), np.float32)
-    wdh = np.empty((24), np.float32)
-    runoffh = np.empty((24), np.float32)
-    etrh = np.empty((24), np.float32)
+    kuzh = kuz / ndaily_div
+    p_nd = np.empty((ndaily_div), np.float32)
+    wd_nd = np.empty((ndaily_div), np.float32)
+    runoff_nd = np.empty((ndaily_div), np.float32)
+    etr_nd = np.empty((ndaily_div), np.float32)
+    whce = whcmax - whcr
+    for i in range(p.size):
+        p_nd.fill(0.)
+        if p[i] > 0.:
+            p1h = p[i] / nh[i]
+            p_nd[0:nh[i]] = p1h
+        et1h = et[i] / ndaily_div
+        for j in range(p_nd.size):
+            whc1 = whc0 + p_nd[j]
+            whc2 = min(whcmax, whc1)
+            runoff_nd[j] = whc1 - whc2
+            x1 = whc2 - whcr
+            wd1 = kuzh * (x1 / whce)**exp
+            if p_nd[j] > 0:
+                etr1 = 0.
+            else:
+                etr1 = min(x1, et1h * x1 / whce)
+            out1 = wd1 + etr1
+            out2 = min(x1, out1)
+            if out1 > out2:
+                wd1 = wd1 * wd1 / out1
+                etr1 = etr1 * etr1 / out1
+            wd_nd[j] = wd1
+            etr_nd[j] = etr1
+            whc3 = whc2 - wd1 - etr1
+            balan = p_nd[j] - wd_nd[j] - runoff_nd[j] - etr_nd[j] + whc0 - whc3
+            if abs(balan) > tiny:
+                return balan, i, j
+            whc0 = whc3
+
+        wd[i] = wd_nd.sum()
+        runoff[i] = runoff_nd.sum()
+        etr[i] = etr_nd.sum()
+
+    return no_error, no_ij, no_ij
+
+
+def swb24001(whcmax, whcr, whc0, kuz, kdirect, exp, p, nh, et, wd, runoff,
+             etr):
+    """
+    deprecated
+    hourly water soil balance of daily data
+    args
+    in
+        whxmax: soil max water holding content -whc- mm
+        whcr: residual whc mm
+        whc0: initial whc mm
+        kuz: soil satured permeability mm/d
+        exp: empirically deduced exponent
+        p: precipitation -water input- mm/d
+        nh: number of daily divisions with rain -for instance,
+            if ndaily_div == 24 we are considering hours-
+        et: evapotranspiration mm/d
+    out
+        wd: water drained
+        runoff: runoff
+        etr: real et
+    returns
+        balance error in day i hour j
+        i: element i (day) where a balance error is raised
+        j: element j (hour) where a balance error is raised
+        if no error balance is raised it returns 0., -1, -1
+    """
+    no_error = 0.
+    ndaily_div = 24
+    no_ij = -1
+    if whcmax < 0.1:
+        wd.fill(0.)
+        runoff[:] = p[:]
+        etr.fill(0.)
+        return no_error, no_ij, no_ij
+
+    tiny = 0.0001
+    kuzh = kuz / ndaily_div
+    ph = np.empty((ndaily_div), np.float32)
+    wdh = np.empty((ndaily_div), np.float32)
+    runoffh = np.empty((ndaily_div), np.float32)
+    etrh = np.empty((ndaily_div), np.float32)
     whce = whcmax - whcr
     for i in range(p.size):
         ph.fill(0.)
         if p[i] > 0.:
             p1h = p[i] / nh[i]
             ph[0:nh[i]] = p1h
-        et1h = et[i] / 24.
+        et1h = et[i] / ndaily_div
         for j in range(ph.size):
             whc1 = whc0 + ph[j]
             whc2 = min(whcmax, whc1)

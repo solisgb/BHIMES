@@ -1041,14 +1041,14 @@ class BHIMES():
             sum_outcrops_area = Outcrop.sum_area(outcrops)
             coefs = np.array([outcrop.area for outcrop in outcrops],
                              np.float32) / sum_outcrops_area
-            pars = {'whc': 0., 'whcr': 0., 'kuz': 0., 'bcexp': 0.}
+            pars = {'whc': 0., 'whcr': 0., 'kdirect': 0., 'kuz': 0.,
+                    'bcexp': 0.}
             for key in pars:
                 pars[key] = BHIMES._averaged_parameter_24(key, coefs, outcrops)
 
             c_ia0, c_whc0 = self._coef_initial_wstorages()
 
             n = 0
-            xf = p.size / 365.
             contour = np.empty((self.neval('kuz') * self.neval('whc'), 5),
                                np.float32)
             for i in range(self.neval('exp')):
@@ -1062,7 +1062,6 @@ class BHIMES():
                         n += 1
                         print(f'{n:n}')
 
-                        #TODO
                         xer, irow, jh = \
                         swb.swb24(xwhc, pars['whcr'], xwhc*c_whc0,
                                   xkuz, pars['kdirect'], xexp, p, nh, et, rch,
@@ -1076,23 +1075,21 @@ class BHIMES():
                             raise ValueError(a)
                         ic += 1
                         contour[ic][:] = [xwhc, xkuz, rch.sum()/nyears,
-                                          runoff.sum()/nyears, etr.sum()/nyears]
-                        self._insert_iter_ts(cur, n, self.time_step,
-                                             xwhc, pars['whcr'], xwhc*c_whc0,
-                                             xstorages[2], xstorages[3],
-                                             xk[0], xk[1], xk[2], xk[3])
-
+                                          runoff.sum()/nyears,
+                                          etr.sum()/nyears]
+                        self._insert_iter_ts24(cur, ic, xwhc, pars['whcr'],
+                                               xwhc*c_whc0, pars['kdirect'],
+                                               xkuz, xexp)
                         self._insert_ts(cur, aquifer.fid, n, dates,
                                         rch, runoff, etr)
 
-            for i in range(2, 5):
-                contour[:,i] = contour[:,i] * (sum_outcrops_area * 0.001 / xf)
-            for i, item in enumerate(('recharge', 'runoff', 'etr')):
-                BHIMES._contour(f'{aquifer.name}: {item} m3/yr',
-                                contour[:, 0], contour[:, 1],
-                                contour[:, i+2], 'whc mm', 'kuz mm',
-                                join(dir_out,
-                                     f'aq_{aquifer.fid}_sensitivity_{item}'))
+                for i, item in enumerate(('drainage', 'runoff', 'etr')):
+                    title = f'Aquifer {aquifer.name}: {item} mm/yr, ' +\
+                    f'B-C exp {xexp:0.3f}'
+                    namefile = f'aq_{aquifer.fid}_sensitivity_{item}_{i:n}'
+                    BHIMES._contour(title, contour[:, 0], contour[:, 1],
+                                    contour[:, i+2], 'whc mm', 'kuz mm',
+                                    join(dir_out, namefile))
 
         con.commit()
         con.close()

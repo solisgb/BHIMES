@@ -104,7 +104,7 @@ def test02():
 
 
 def test03():
-    def ugw_drainage(whcmax, whcr, whc0, kuz, exp, winput, et):
+    def ugw_drainage(whcmax, whcr, whc0, kuz, exp, p, et):
         """
         args
         whxmax: max water holding content mm
@@ -121,34 +121,43 @@ def test03():
         etr: real et
         """
         tiny = 0.00001
+        whce = whcmax - whcr
         if whcmax < tiny:
-            return 0., 0., winput, 0.
-        whc1 = whc0 + winput
+            return 0., 0., p, 0.
+        whc1 = whc0 + p
         whc2 = min(whcmax, whc1)
-        runoff = whc1 - whc2
-        wd = kuz * ((whc2 - whcr) / (whcmax - whcr))**exp
-        wd = min(whc2, wd)
-        whc3 = whc2 - wd
-        if winput > 0:
-            etr = 0.
+        runoff1 = whc1 - whc2
+        x1 = whc2 - whcr
+        wd1 = kuz * (x1 / whce)**exp
+        if p > 0:
+            etr1 = 0.
         else:
-            etr = min(whc3, et * whc3 / whcmax)
-        whc3 -= etr
-        balan = winput - wd - runoff - etr + whc0 - whc3
-        if balan > tiny:
-            raise ValueError(f'error de balance {balan}:0f')
-        return whc3, wd, runoff, etr
+            etr1 = min(x1, et * x1 / whce)
+        out1 = wd1 + etr1
+        out2 = min(x1, out1)
+        if out1 > out2:
+            wd1 = wd1 * wd1 / out1
+            etr1 = etr1 * etr1 / out1
+        whc3 = whc2 - wd1 - etr1
+        balan = p - wd1 - runoff1 - etr1 + whc0 - whc3
+        a = f'p {p:0.1f} - wd1 {wd1:0.1f} - runoff {runoff1:0.1f} -' +\
+        f' etr {etr1:0.1f} - whc0 {whc0:0.1f} - whcf {whc3:0.1f} = {balan:0.5f}'
+        print(a)
+        if abs(balan) > tiny:
+            raise ValueError(f'Error de balance {balan:0.5f}')
+        return whc3, wd1, runoff1, etr1
+
 
     whcmax = 25
     whcr = 1
     whc0 = whcmax * 0.5
-    kuz0 = 10
-    exp = 0.5
+    kuz0 = 100
+    exp = 6
     n = 24
     et = np.empty((n), np.float32)
-    et.fill(0.5)
+    et.fill(1.)
     p = np.zeros((n), np.float32)
-    p[4] = 15.
+    p[4] = 35.
 
     kuz = kuz0/n
     whc = np.zeros((n+1), np.float32)
@@ -160,7 +169,7 @@ def test03():
     for i in range(n):
         whc[i+1], wr[i], runoff[i], etr[i] = \
         ugw_drainage(whcmax, whcr, whc[i], kuz, exp, p[i], et[i])
-    title = f'whcmax:{whcmax:0.0f}, whc0{whc0:0.0f}, kuz{kuz0:0.0f}, exp:{exp:0.1f}'
+    title = f'whcmax {whcmax:0.0f}, whc0 {whc0:0.0f}, kuz {kuz0:0.0f}, exp {exp:0.1f}'
     whc_var = whc[1:] - whc[0:-1]
 
     xyu = [[t, p, 'p'], [t, et,'et'], [t, whc_var,'whc_var'] ]
@@ -170,7 +179,7 @@ def test03():
     print(f'p: {p.sum():0.1f}, et: {et.sum():0.1f}')
     print(f'wr: {wr.sum():0.1f}, runoff: {runoff.sum():0.1f}, ',
           f'etr: {etr.sum():0.1f}, ',
-          f'whc final: {whc[-1]:0.1f}')
+          f'whc final: {whc[n-1]:0.1f}')
 
 
 def xy(x, y1, leg1, y2, leg2, y3, leg3, title, xlabel, ylabel):
