@@ -54,8 +54,8 @@ class BHIMES():
     _initial_conditions = ('dry', 'normal', 'wet')  # don't change the order!
     _et_procedures = ('basic', 'hargreaves')
     _select_r0 = 'select r0 from allen.r0 where lat = ? order by "month"'
-    _tname_iters_ts = 'swb01_iters'
-    _tname_ts = 'swb01_ts'
+    _tname_iters_ts = {'swb01': 'swb01_iters', 'swb24': 'swb24_iters'}
+    _tname_ts = {'swb01': 'swb01_ts', 'swb24': 'swb24_ts'}
 
 
     def __init__(self, project: str, et_proc: str = 'basic',
@@ -1007,7 +1007,7 @@ class BHIMES():
         cur.execute(self.select_aquifers.text)
         aquifers = [Aquifer(row) for row in cur.fetchall()]
 
-        self._create_tables_ts(cur)
+        self._create_tables_ts(cur, 'swb24')
 
         for aquifer in aquifers:
             print(f'{aquifer.name}')
@@ -1022,6 +1022,7 @@ class BHIMES():
             m = np.sum(p > 1.)
             gt1 = np.random.randint(1, high=25, size=(m,))
             nh = swb.nhours_generator01(p, gt1)
+            nyears = p.size / 365.
             et = np.empty((p.size), np.float32)
             if self.proc == 'hargreaves':
                 # solar radiation
@@ -1048,10 +1049,11 @@ class BHIMES():
 
             n = 0
             xf = p.size / 365.
-            contour = np.empty((self.neval('exp') * self.neval('kuz') \
-                                * self.neval('whc'), 5), np.float32)
+            contour = np.empty((self.neval('kuz') * self.neval('whc'), 5),
+                               np.float32)
             for i in range(self.neval('exp')):
                 xexp = pars['bcexp'] + (pars['bcexp'] * self.delta('exp') * i)
+                ic = -1
                 for j in range(self.neval('kuz')):
                     xkuz = pars['kuz'] + (pars['kuz'] * self.delta('kuz') * j)
                     for k in range(self.neval('whc')):
@@ -1060,8 +1062,9 @@ class BHIMES():
                         n += 1
                         print(f'{n:n}')
 
+                        #TODO
                         xer, irow, jh = \
-                        swb.swb24(xwhc, pars['whcr'], pars['whcr']*c_whc0,
+                        swb.swb24(xwhc, pars['whcr'], xwhc*c_whc0,
                                   xkuz, pars['kdirect'], xexp, p, nh, et, rch,
                                   runoff, etr)
 
@@ -1071,16 +1074,16 @@ class BHIMES():
                                  f'Date: {dates[irow]} (i {irow:n}, j {jh:n})')
                             a = '\n'.join(a)
                             raise ValueError(a)
+                        ic += 1
+                        contour[ic][:] = [xwhc, xkuz, rch.sum()/nyears,
+                                          runoff.sum()/nyears, etr.sum()/nyears]
+                        self._insert_iter_ts(cur, n, self.time_step,
+                                             xwhc, pars['whcr'], xwhc*c_whc0,
+                                             xstorages[2], xstorages[3],
+                                             xk[0], xk[1], xk[2], xk[3])
 
-                    contour[n-1][:] = [xstorages[2], xk[1], rch.sum(),
-                                 runoff.sum(), etr.sum()]
-                    self._insert_iter_ts(cur, n, self.time_step,
-                                         xstorages[0], xstorages[1],
-                                         xstorages[2], xstorages[3],
-                                         xk[0], xk[1], xk[2], xk[3])
-
-                    self._insert_ts(cur, aquifer.fid, n, dates, rch, runoff,
-                                    etr)
+                        self._insert_ts(cur, aquifer.fid, n, dates,
+                                        rch, runoff, etr)
 
             for i in range(2, 5):
                 contour[:,i] = contour[:,i] * (sum_outcrops_area * 0.001 / xf)
@@ -1166,34 +1169,48 @@ class BHIMES():
         plt.close('all')
 
 
-    def _create_tables_ts(self, cur):
+    def _create_tables_ts(self, cur, proc = 'swb01'):
         """
         saves time series outputs to table swb01_ts
         """
 
-        drop_table0 = f'drop table if exists {BHIMES._tname_iters_ts}'
-        drop_table1 = f'drop table if exists {BHIMES._tname_ts}'
+        drop_table0 = f'drop table if exists {BHIMES._tname_iters_ts[proc]}'
+        drop_table1 = f'drop table if exists {BHIMES._tname_ts[proc]}'
 
-        create_table0 = \
-        f"""
-        create table if not exists {BHIMES._tname_iters_ts} (
-            n integer,
-            ntimestep integer,
-            iamax real,
-            ia0 real,
-            whcmax real,
-            whc0 real,
-            kdirect real,
-            kuz real,
-            klateral real,
-            krunoff real,
-            primary key (n)
-        )
-        """
-
+        if proc == 'swb01':
+            create_table0 = \
+            f"""
+            create table if not exists {BHIMES._tname_iters_ts[proc]} (
+                n integer,
+                ntimestep integer,
+                iamax real,
+                ia0 real,
+                whcmax real,
+                whc0 real,
+                kdirect real,
+                kuz real,
+                klateral real,
+                krunoff real,
+                primary key (n)
+            )
+            """
+        else:
+            create_table0 = \
+            f"""
+            create table if not exists {BHIMES._tname_iters_ts[proc]} (
+                n integer,
+                whc real,
+                whcr real,
+                whc0 real,
+                kdirect real,
+                kuz real,
+                bcexp real,
+                primary key (n)
+            )
+            """
         create_table1 = \
         f"""
-        create table if not exists {BHIMES._tname_ts} (
+        create table if not exists {BHIMES._tname_ts[proc]} (
             aquifer integer,
             n integer,
             date text,
@@ -1209,9 +1226,10 @@ class BHIMES():
 
     def _insert_iter_ts(self, cur, n, ntimestep, iamax, ia0, whcmax, whc0,
                         kdirect, kuz, klateral, krunoff):
+        proc = 'swb01'
         insert = \
         f"""
-        insert into {BHIMES._tname_iters_ts} (n, ntimestep, iamax, ia0,
+        insert into {BHIMES._tname_iters_ts[proc]} (n, ntimestep, iamax, ia0,
             whcmax, whc0, kdirect, kuz, klateral, krunoff)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
@@ -1219,6 +1237,18 @@ class BHIMES():
                              float(whcmax), float(whc0),
                              float(kdirect), float(kuz), float(klateral),
                              float(krunoff)))
+
+
+    def _insert_iter_ts24(self, cur, n, whc, whcr, whc0, kdirect, kuz, bcexp):
+        proc = 'swb24'
+        insert = \
+        f"""
+        insert into {BHIMES._tname_iters_ts[proc]} (n, whc, whcr, whc0,
+            kdirect, kuz, bcexp)
+        values (?, ?, ?, ?, ?, ?, ?)
+        """
+        cur.execute(insert, (n, float(whc), float(whcr), float(whc0),
+                             float(kdirect), float(kuz), float(bcexp)))
 
 
     def _insert_ts(self, cur, aquifer_fid, n, dates, rch, rnf, etr):
